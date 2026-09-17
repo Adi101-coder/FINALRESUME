@@ -112,6 +112,7 @@ def config_to_dict(config: AutoApplyConfig, candidate_id: int) -> dict:
         "candidate_id": candidate_id,
         "job_titles": config.job_titles or DEFAULT_JOB_TITLES,
         "location": config.location or "Remote",
+        "remote_type": config.remote_type or "",
         "resume_uploaded": path.exists(),
         "resume_filename": config.resume_filename or (path.name if path.exists() else ""),
         "resume_path": str(path) if path.exists() else config.resume_path,

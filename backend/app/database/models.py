@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.session import Base
@@ -77,6 +77,18 @@ class JobMatch(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class CandidateJob(Base):
+    """Jobs discovered/selected for a specific candidate (per-resume job pool)."""
+
+    __tablename__ = "candidate_jobs"
+    __table_args__ = (UniqueConstraint("candidate_id", "job_id", name="uq_candidate_job"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Application(Base):
     __tablename__ = "applications"
 
@@ -117,6 +129,7 @@ class AutoApplyConfig(Base):
     candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), primary_key=True)
     job_titles: Mapped[list] = mapped_column(JSON, default=list)
     location: Mapped[str] = mapped_column(String(255), default="Remote")
+    remote_type: Mapped[str] = mapped_column(String(64), default="")
     resume_filename: Mapped[str] = mapped_column(String(512), default="")
     resume_path: Mapped[str] = mapped_column(String(1024), default="")
     updated_at: Mapped[datetime] = mapped_column(

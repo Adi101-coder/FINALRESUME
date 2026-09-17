@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     vector_index_path: Path = BASE_DIR / "storage" / "faiss_index"
 
     match_threshold: float = 75.0
-    top_jobs_limit: int = 50
+    top_jobs_limit: int = 200
 
     # Plain string env var — never use list[str] here (Render/pydantic JSON parsing breaks).
     allowed_origins: str = Field(
@@ -67,11 +67,18 @@ class Settings(BaseSettings):
         return not self.debug
 
     # Job boards — Indeed, ZipRecruiter, LinkedIn, Glassdoor + Greenhouse career pages
+    # + Foundit + Naukri (India-first: LinkedIn, Indeed, Foundit, Naukri)
     indeed_domain: str = "www.indeed.com"
+    indeed_session_cookie: str = ""
     greenhouse_boards: str = "stripe,figma,airbnb,netflix,datadog"
     linkedin_access_token: str = ""
     linkedin_session_cookie: str = ""
     glassdoor_session_cookie: str = ""
+    foundit_session_cookie: str = ""
+    naukri_session_cookie: str = ""
+    naukri_nkparam: str = ""
+    naukri_app_id: str = ""
+    naukri_system_id: str = ""
 
 
 settings = Settings()

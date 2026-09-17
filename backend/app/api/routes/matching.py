@@ -7,7 +7,7 @@ from app.agents.matcher.engine import MatchingEngine
 from app.agents.resume.optimizer import ResumeOptimizer
 from app.agents.resume.pdf_generator import ResumePDFGenerator
 from app.config import settings
-from app.database.models import Candidate, Job, JobMatch, Resume
+from app.database.models import Candidate, CandidateJob, Job, JobMatch, Resume
 from app.database.session import get_db
 from app.schemas.job import MatchResult
 from app.schemas.profile import CandidateProfile
@@ -16,7 +16,7 @@ logger = logging.getLogger("app.matching")
 
 router = APIRouter(prefix="/matching", tags=["matching"])
 
-MATCH_POOL_LIMIT = 150
+MATCH_POOL_LIMIT = 1000
 
 
 @router.post("/{candidate_id}", response_model=list[MatchResult])
@@ -27,10 +27,29 @@ def match_candidate_jobs(candidate_id: int, db: Session = Depends(get_db)):
 
     profile = CandidateProfile.model_validate(candidate.profile_json)
     engine = MatchingEngine(threshold=settings.match_threshold)
-    jobs = db.query(Job).order_by(Job.created_at.desc()).limit(MATCH_POOL_LIMIT).all()
-    logger.info("Matching candidate_id=%s against %d jobs", candidate_id, len(jobs))
+
+    candidate_job_ids = [
+        row[0]
+        for row in db.query(CandidateJob.job_id)
+        .filter(CandidateJob.candidate_id == candidate.id)
+        .order_by(CandidateJob.created_at.desc())
+        .limit(MATCH_POOL_LIMIT)
+        .all()
+    ]
     from app.services.pipeline_log import step, step_done
 
+    if not candidate_job_ids:
+        logger.info("No platform-discovered jobs for candidate_id=%s — run discovery first.", candidate_id)
+        step("MATCH_JOBS", candidate_id=candidate_id, job_pool=0)
+        step_done("MATCH_JOBS", returned=0, passed=0)
+        return []
+
+    jobs = db.query(Job).filter(Job.id.in_(candidate_job_ids)).all()
+    logger.info(
+        "Matching candidate_id=%s against %d live platform jobs (no shared pool)",
+        candidate_id,
+        len(jobs),
+    )
     step("MATCH_JOBS", candidate_id=candidate_id, job_pool=len(jobs))
 
     db.query(JobMatch).filter(JobMatch.candidate_id == candidate.id).delete()

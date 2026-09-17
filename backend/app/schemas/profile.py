@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ExperienceItem(BaseModel):
@@ -46,3 +46,10 @@ class CandidateProfile(BaseModel):
     linkedin: str = ""
     summary: str = ""
     raw_text: str = ""
+
+    @field_validator("raw_text", mode="before")
+    @classmethod
+    def sanitize_raw_text(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.encode("utf-8", errors="replace").decode("utf-8")
+        return v

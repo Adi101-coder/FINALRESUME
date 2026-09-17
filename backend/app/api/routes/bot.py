@@ -26,6 +26,11 @@ class BotStartRequest(BaseModel):
     job_company: str | None = None
 
 
+class BotLoginRequest(BaseModel):
+    candidate_id: int
+    platform: str = "linkedin"
+
+
 @router.get("/availability")
 def bot_availability():
     return bot_runner.availability()
@@ -60,3 +65,23 @@ def bot_start(payload: BotStartRequest):
 @router.post("/stop/{candidate_id}")
 def bot_stop(candidate_id: int):
     return bot_runner.stop(candidate_id)
+
+
+@router.post("/login")
+def bot_login(payload: BotLoginRequest):
+    """Open the platform login page for a fresh user; saves session on 'Login done'."""
+    try:
+        return bot_runner.start_login(payload.candidate_id, platform=payload.platform)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Bot login failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/human-ready")
+def signal_human_ready():
+    """Signal that the human has completed CAPTCHA/login in the browser."""
+    from app.agents.browser.captcha import signal_human_ready as _signal
+    _signal()
+    return {"status": "ok", "message": "Human action signal sent. Bot will resume."}

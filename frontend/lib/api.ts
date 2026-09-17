@@ -103,11 +103,16 @@ export type Application = {
 
 export type DiscoveryResult = {
   candidate_id: number;
+  role?: string;
   search_queries: string[];
   scraped: number;
   created: number;
   skipped_duplicates: number;
+  candidate_jobs: number;
   total_jobs_in_db: number;
+  total_available?: number;
+  fresh?: boolean;
+  platform_counts?: Record<string, { fetched: number; available: number; errors: number; error?: string }>;
   sources?: Record<string, { fetched: number; errors: number }>;
 };
 
@@ -167,9 +172,24 @@ export async function getJobSources() {
   return res.json() as Promise<{ sources: JobSource[] }>;
 }
 
-export async function discoverJobs(candidateId: number) {
+export async function discoverJobs(
+  candidateId: number,
+  platforms?: string[],
+  remoteType?: string,
+  fresh = true,
+) {
   logClick("discover_jobs", "profile-based discovery", { candidateId });
-  const res = await apiFetch(`/api/jobs/discover/${candidateId}`, { method: "POST" }, 180_000);
+  const params = new URLSearchParams();
+  if (platforms && platforms.length > 0) {
+    params.set("sources", platforms.join(","));
+  }
+  if (remoteType) {
+    params.set("remote_type", remoteType);
+  }
+  params.set("fresh", fresh ? "true" : "false");
+  const qs = params.toString();
+  const url = `/api/jobs/discover/${candidateId}${qs ? `?${qs}` : ""}`;
+  const res = await apiFetch(url, { method: "POST" }, 180_000);
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<DiscoveryResult>;
 }
@@ -242,6 +262,7 @@ export type AutoApplyConfig = {
   candidate_id: number;
   job_titles: string[];
   location: string;
+  remote_type?: string;
   resume_uploaded: boolean;
   resume_filename: string;
   resume_path: string;
@@ -260,11 +281,12 @@ export async function updateAutoApplyConfig(
   candidateId: number,
   jobTitles: string[],
   location: string,
+  remoteType?: string,
 ) {
   const res = await apiFetch(`/api/auto-apply/${candidateId}/config`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ job_titles: jobTitles, location }),
+    body: JSON.stringify({ job_titles: jobTitles, location, remote_type: remoteType || null }),
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<AutoApplyConfig>;
@@ -354,4 +376,20 @@ export async function stopBot(candidateId: number) {
   const res = await apiFetch(`/api/bot/stop/${candidateId}`, { method: "POST" });
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<BotStatus>;
+}
+
+export async function startBotLogin(candidateId: number, platform: string) {
+  const res = await apiFetch("/api/bot/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_id: candidateId, platform }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<BotStatus>;
+}
+
+export async function signalHumanReady() {
+  const res = await apiFetch("/api/bot/human-ready", { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
 }

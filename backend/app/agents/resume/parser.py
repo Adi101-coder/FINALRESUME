@@ -48,6 +48,7 @@ class ResumeParser:
 
     def parse(self, file_path: Path) -> CandidateProfile:
         raw_text = self.extract_text(file_path)
+        raw_text = raw_text.encode("utf-8", errors="replace").decode("utf-8")
         if settings.openai_api_key:
             try:
                 logger.info("Using LLM parser (%s)", settings.openai_model)

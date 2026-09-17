@@ -10,12 +10,15 @@ import {
   checkBackendHealth,
   discoverJobs,
   getApplications,
+  getAutoApplyConfig,
   getJobSources,
   matchJobs,
   personalizeResume,
   createApplication,
   uploadResume,
   startBot,
+  startBotLogin,
+  signalHumanReady,
   getBotStatus,
   API_URL,
   type CandidateProfile,
@@ -23,6 +26,8 @@ import {
   type JobSource,
   type MatchResult,
 } from "@/lib/api";
+
+const ALL_PLATFORMS = ["linkedin", "indeed", "foundit", "naukri"];
 
 const FEATURES = [
   {
@@ -40,7 +45,7 @@ const FEATURES = [
 ];
 
 const DAILY_FEATURES = [
-  "Job discovery from Indeed, ZipRecruiter, LinkedIn, Glassdoor + Greenhouse companies",
+  "Live job discovery from LinkedIn, Indeed, Foundit + Naukri.com",
   "Profile-based queries that adapt to any industry",
   "ATS-aware resume personalization per role",
   "Persistent application history and analytics",
@@ -53,7 +58,7 @@ const FOCUS_BENEFITS = [
   "Export-ready PDFs tailored to each posting",
 ];
 
-const TRUSTED = ["Indeed", "ZipRecruiter", "LinkedIn", "Glassdoor", "Greenhouse"];
+const TRUSTED = ["LinkedIn", "Indeed", "Foundit", "Naukri.com"];
 
 const COMMUNITY = ["AK", "JM", "SR", "PL", "DC", "EV", "TH", "NW"];
 
@@ -70,11 +75,38 @@ export default function HomePage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [botRunning, setBotRunning] = useState(false);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([
+    "linkedin",
+    "indeed",
+    "foundit",
+    "naukri",
+  ]);
+  const [remoteType, setRemoteType] = useState<string>("");
+  const [autoApplyArmed, setAutoApplyArmed] = useState(false);
+  const [sessions, setSessions] = useState<
+    { platform: string; logged_in: boolean; updated_at: string | null }[] | null
+  >(null);
+  const [loginPlatform, setLoginPlatform] = useState<string | null>(null);
+
+  function handlePlatformToggle(platform: string) {
+    setSelectedPlatforms((prev) =>
+      prev.includes(platform) ? prev.filter((p) => p !== platform) : [...prev, platform],
+    );
+  }
 
   async function refreshApplications(id: number) {
     try {
       const apps = await getApplications(id);
       setAppliedIds(new Set(apps.map((a) => a.job_id)));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function refreshSessions(id: number) {
+    try {
+      const cfg = await getAutoApplyConfig(id);
+      setSessions(cfg.sessions ?? null);
     } catch {
       /* ignore */
     }
@@ -104,6 +136,7 @@ export default function HomePage() {
       void getApplications(id)
         .then((apps) => setAppliedIds(new Set(apps.map((a) => a.job_id))))
         .catch(() => {});
+      void refreshSessions(id);
       void getBotStatus(id)
         .then((s) => setBotRunning(s.state === "running" || s.state === "stopping"))
         .catch(() => {});
@@ -121,12 +154,57 @@ export default function HomePage() {
       setCandidateId(result.candidate_id);
       window.localStorage.setItem("candidateId", String(result.candidate_id));
       setProfile(result.profile);
+      setSessions(null);
+      void refreshSessions(result.candidate_id);
       setPipelineStep(1);
-      setMessage(`Resume parsed for ${result.profile.name || "candidate"}.`);
+      setMessage(`Resume parsed for ${result.profile.name || "candidate"}. Now log in to platforms in Step 2.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleLogin(platform: string) {
+    if (!candidateId) return;
+    setLoginPlatform(platform);
+    setError("");
+    try {
+      await startBotLogin(candidateId, platform);
+      setMessage(
+        `Opening your Chrome on ${platform} — already-logged-in sessions are picked up automatically. Otherwise log in, then press “Login done”.`,
+      );
+      // Wait for the login run to finish (human logs in + presses Login done).
+      for (let i = 0; i < 100; i += 1) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const s = await getBotStatus(candidateId);
+          if (s.state === "idle" || s.state === "error") break;
+        } catch {
+          break;
+        }
+      }
+      await refreshSessions(candidateId);
+      setMessage(`Logged in — searching live jobs for your role…`);
+      await handleDiscoverAndMatch();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Login failed";
+      setError(
+        msg.includes("already running")
+          ? "Another login/apply is already running — wait for it to finish, then log in to the next platform."
+          : msg,
+      );
+    } finally {
+      setLoginPlatform(null);
+    }
+  }
+
+  async function handleLoginDone() {
+    try {
+      await signalHumanReady();
+      setMessage("Session saving — your jobs will appear in a moment…");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Signal failed");
     }
   }
 
@@ -136,17 +214,28 @@ export default function HomePage() {
     setLoadingPhase("discover");
     setError("");
     setMatches([]);
+    setAutoApplyArmed(false);
     setPipelineStep(2);
     try {
-      const disc = await discoverJobs(candidateId);
+      // Fresh live search on every selected platform — no stored/static pool.
+      const disc = await discoverJobs(candidateId, selectedPlatforms, remoteType || undefined, true);
       setDiscovery(disc);
       setPipelineStep(3);
       setLoadingPhase("match");
       const results = await matchJobs(candidateId);
       setMatches(results);
       setPipelineStep(4);
+      const counts = disc.platform_counts ?? {};
+      const perPlatform = selectedPlatforms
+        .map((p) => {
+          const c = counts[p];
+          return `${p}: ${c ? c.available : 0} available`;
+        })
+        .join(" · ");
+      const total = disc.total_available ?? disc.candidate_jobs;
+      const role = disc.role ?? disc.search_queries[0] ?? "this role";
       setMessage(
-        `${disc.total_jobs_in_db} jobs in pool (${disc.created} new) · ${results.length} scored matches shown below`,
+        `${total} live jobs for “${role}” — ${perPlatform} · ${results.length} scored matches below. Arm auto-apply to proceed.`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Discovery failed");
@@ -187,18 +276,27 @@ export default function HomePage() {
 
   async function handleBotApply(match: MatchResult) {
     if (!candidateId || !match.apply_url) return;
+    if (!autoApplyArmed) {
+      setError("Review the live counts above, then arm auto-apply before the bot runs.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const platform = match.apply_url.includes("linkedin")
+      const u = match.apply_url.toLowerCase();
+      const platform = u.includes("linkedin")
         ? "linkedin"
-        : match.apply_url.includes("indeed")
+        : u.includes("indeed")
           ? "indeed"
-          : match.apply_url.includes("ziprecruiter")
-            ? "ziprecruiter"
-            : match.apply_url.includes("glassdoor")
-              ? "glassdoor"
-              : "linkedin";
+          : u.includes("naukri")
+            ? "naukri"
+            : u.includes("foundit") || u.includes("monsterindia")
+              ? "foundit"
+              : u.includes("ziprecruiter")
+                ? "ziprecruiter"
+                : u.includes("glassdoor")
+                  ? "glassdoor"
+                  : "linkedin";
       await startBot(candidateId, {
         platform,
         continuous: false,
@@ -217,6 +315,71 @@ export default function HomePage() {
       setError(err instanceof Error ? err.message : "Bot apply failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleAutoApplyAll() {
+    if (!candidateId || matches.length === 0) return;
+    if (!autoApplyArmed) {
+      setError("Arm auto-apply first — confirm the exact live counts before bulk apply.");
+      return;
+    }
+    const targets = matches.filter((m) => m.passed_threshold && !appliedIds.has(m.job_id));
+    if (targets.length === 0) {
+      setMessage("No strong unapplied matches left for auto-apply.");
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      let done = 0;
+      for (const match of targets.slice(0, 10)) {
+        setMessage(`Auto-apply ${done + 1}/${Math.min(targets.length, 10)}: ${match.title}…`);
+        await handleBotApplyTracked(match);
+        done += 1;
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+      setMessage(`Auto-apply batch finished: ${done} jobs processed. Check dashboard for status.`);
+      await refreshApplications(candidateId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Bulk auto-apply failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleBotApplyTracked(match: MatchResult) {
+    if (!candidateId || !match.apply_url) return;
+    const u = match.apply_url.toLowerCase();
+    const platform = u.includes("linkedin")
+      ? "linkedin"
+      : u.includes("indeed")
+        ? "indeed"
+        : u.includes("naukri")
+          ? "naukri"
+          : u.includes("foundit") || u.includes("monsterindia")
+            ? "foundit"
+            : "linkedin";
+    await startBot(candidateId, {
+      platform,
+      continuous: false,
+      batchSize: 1,
+      jobUrl: match.apply_url,
+      jobId: match.job_id,
+      jobTitle: match.title,
+      jobCompany: match.company,
+    });
+    setBotRunning(true);
+    // Wait for this single-job run to finish (poll up to ~90s) before next.
+    for (let i = 0; i < 30; i += 1) {
+      await new Promise((r) => setTimeout(r, 3000));
+      try {
+        const s = await getBotStatus(candidateId);
+        setBotRunning(s.state === "running" || s.state === "stopping");
+        if (s.state === "idle" || s.state === "error") break;
+      } catch {
+        break;
+      }
     }
   }
 
@@ -443,11 +606,22 @@ export default function HomePage() {
         pipelineStep={pipelineStep}
         message={message}
         error={error}
+        selectedPlatforms={selectedPlatforms}
+        remoteType={remoteType}
+        sessions={sessions}
+        loginPlatform={loginPlatform}
         onUpload={(file) => void handleUpload(file)}
+        onLogin={(p) => void handleLogin(p)}
+        onLoginDone={() => void handleLoginDone()}
         onDiscoverAndMatch={() => void handleDiscoverAndMatch()}
         onPersonalize={(jobId) => void handlePersonalize(jobId)}
         onApply={(match) => void handleApply(match)}
         onBotApply={(match) => void handleBotApply(match)}
+        onAutoApplyAll={() => void handleAutoApplyAll()}
+        autoApplyArmed={autoApplyArmed}
+        onAutoApplyArmedChange={setAutoApplyArmed}
+        onPlatformToggle={handlePlatformToggle}
+        onRemoteTypeChange={setRemoteType}
         botRunning={botRunning}
       />
 

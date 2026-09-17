@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from app.schemas.profile import CandidateProfile
 
 logger = logging.getLogger("app.matcher")
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 class MatchingEngine:
     """Score resume vs job description on multiple dimensions."""
@@ -32,24 +35,28 @@ class MatchingEngine:
         profile_text = str(profile_data).lower()
         description = job.get("description", "").lower()
 
+        terms = self._profile_terms(profile_data)
+        relevance_score = self._relevance_score(terms, job, job_skills)
         skills_score = self._skills_score(profile_skills, job_skills, profile_text, description)
         experience_score = self._experience_score(profile_data, description)
         location_score = self._location_score(profile_data.get("location", ""), job.get("location", ""))
         embedding_score = self._embedding_score(profile_data, job, profile_vec=profile_vec)
 
         final = round(
-            skills_score * 0.35
-            + experience_score * 0.20
-            + embedding_score * 0.30
-            + location_score * 0.15,
+            relevance_score * 0.55
+            + skills_score * 0.10
+            + experience_score * 0.10
+            + embedding_score * 0.15
+            + location_score * 0.10,
             1,
         )
 
         logger.debug(
-            "Score %s @ %s → total=%.1f skills=%.1f exp=%.1f embed=%.1f loc=%.1f pass=%s",
+            "Score %s @ %s → total=%.1f relevance=%.1f skills=%.1f exp=%.1f embed=%.1f loc=%.1f pass=%s",
             job.get("title", "?"),
             job.get("company", "?"),
             final,
+            relevance_score,
             skills_score,
             experience_score,
             embedding_score,
@@ -75,6 +82,50 @@ class MatchingEngine:
     def score_many(self, profile: CandidateProfile | dict, jobs: list[dict]) -> list[dict]:
         profile_vec = self.profile_vector(profile)
         return [self.score(profile, job, profile_vec=profile_vec) for job in jobs]
+
+    def _profile_terms(self, profile: dict) -> list[str]:
+        """Role/field/skill phrases that signal relevance to this resume."""
+        terms: set[str] = set()
+        for role in profile.get("preferred_roles") or []:
+            role = str(role).lower().strip()
+            if role:
+                terms.add(role)
+        for exp in profile.get("experience") or []:
+            role = str(exp.get("role", "")).lower().strip()
+            if role:
+                terms.add(role)
+        for edu in profile.get("education") or []:
+            for key in ("field", "degree"):
+                value = str(edu.get(key, "")).lower().strip()
+                if len(value) >= 3:
+                    terms.add(value)
+        for skill in profile.get("skills") or []:
+            skill = str(skill).lower().strip()
+            if skill:
+                terms.add(skill)
+        for keyword in profile.get("keywords") or []:
+            keyword = str(keyword).lower().strip()
+            if keyword:
+                terms.add(keyword)
+        return sorted(t for t in terms if len(t) >= 3)
+
+    def _relevance_score(self, terms: list[str], job: dict, job_skills: list[str]) -> float:
+        """How well the job title/description matches the resume's role + skill vocabulary."""
+        if not terms:
+            return 0.0
+        title_text = " ".join([str(job.get("title", "")), str(job.get("company", ""))]).lower()
+        description = _HTML_TAG_RE.sub(" ", str(job.get("description", ""))).lower()
+
+        title_hits = sum(1 for term in terms if term in title_text)
+        title_pct = min(100.0, (title_hits / len(terms)) * 400)
+
+        desc_hits = sum(1 for term in terms if term in description)
+        desc_pct = min(100.0, (desc_hits / len(terms)) * 500)
+
+        skills_hits = sum(1 for skill in job_skills if skill in terms)
+        skills_pct = (skills_hits / len(job_skills)) * 100 if job_skills else 0.0
+
+        return round(0.5 * title_pct + 0.3 * desc_pct + 0.2 * skills_pct, 1)
 
     def _skills_score(
         self,

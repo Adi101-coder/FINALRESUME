@@ -6,7 +6,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agents.scraper.registry import SOURCE_CATALOG, build_scrapers
-from app.database.models import Candidate, Job
+from app.database.models import Candidate, CandidateJob, Job
 from app.schemas.profile import CandidateProfile
 from app.services.deduplication import job_dedup_hash
 from app.services.job_normalize import prepare_job_row
@@ -18,19 +18,24 @@ logger = logging.getLogger("app.discovery")
 SCRAPER_TIMEOUT_SEC = 30.0
 JOBS_PER_SOURCE = 50
 JOBS_AFTER_FILTER = 35
-# Greenhouse boards expose all company jobs — filter locally by profile queries.
+# Sources that expose the whole feed: fetch broadly, then select locally by profile queries.
 BOARD_SOURCES = frozenset({"greenhouse"})
+BULK_SOURCES = frozenset({"remotive", "remoteok", "arbeitnow"})
 
 
 def _select_jobs_for_profile(jobs: list[dict], queries: list[str], limit: int) -> list[dict]:
-    """Prefer jobs matching profile queries; still return broader pool if matches are sparse."""
+    """Keep only jobs that match the resume's profile queries.
+
+    Every platform's feed is fetched, and only jobs relevant to this specific resume
+    are kept. If nothing matches at all, return the raw batch so a niche profile still
+    gets *some* live results to evaluate.
+    """
     if not jobs:
         return []
     if not queries:
         return jobs[:limit]
 
     matched: list[dict] = []
-    rest: list[dict] = []
     for job in jobs:
         haystack = " ".join(
             [
@@ -42,29 +47,62 @@ def _select_jobs_for_profile(jobs: list[dict], queries: list[str], limit: int) -
         ).lower()
         if any(q.lower() in haystack for q in queries):
             matched.append(job)
-        else:
-            rest.append(job)
 
-    combined = matched + rest
-    return combined[:limit]
+    return (matched or jobs)[:limit]
 
 
-async def _fetch_from_scraper(scraper, queries: list[str], location_hint: str) -> list[dict]:
-    """Profile-based search for job boards; full-board fetch + local filter for Greenhouse."""
+async def _fetch_from_scraper(
+    scraper,
+    queries: list[str],
+    location_hint: str,
+    query_index: int = 0,
+) -> tuple[list[dict], int | None]:
+    """Live search per platform for the candidate's role.
+
+    Every selected platform is searched live (no stored pool). Search boards
+    use the resume's primary role query server-side so the per-platform total
+    is the exact available number for THAT role. Bulk / board sources fetch
+    the full feed and are filtered locally against every resume query.
+    Returns (jobs_kept_for_profile, site_total_available).
+    """
     source = scraper.source_name
-    if source in BOARD_SOURCES:
-        raw = await scraper.fetch_jobs(query="", location="", limit=JOBS_PER_SOURCE)
+    if source in BOARD_SOURCES or source in BULK_SOURCES:
+        if hasattr(scraper, "fetch_jobs_with_count"):
+            raw, _total = await scraper.fetch_jobs_with_count(
+                query="", location="", limit=JOBS_PER_SOURCE
+            )
+        else:
+            raw = await scraper.fetch_jobs(query="", location="", limit=JOBS_PER_SOURCE)
+            _total = None
+        kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER)
+        # For bulk feeds the "available for role" is the matched subset.
+        return kept, (len(kept) if _total is None else _total)
+    primary_query = queries[0] if queries else "software engineer"
+    if hasattr(scraper, "fetch_jobs_with_count"):
+        raw, total = await scraper.fetch_jobs_with_count(
+            query=primary_query,
+            location=location_hint,
+            limit=JOBS_PER_SOURCE,
+        )
     else:
-        primary_query = queries[0] if queries else "software engineer"
         raw = await scraper.fetch_jobs(
             query=primary_query,
             location=location_hint,
             limit=JOBS_PER_SOURCE,
         )
-    return _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER)
+        total = None
+    kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER)
+    if total is None:
+        total = len(kept)
+    return kept, total
 
 
-async def _scrape_one(scraper, queries: list[str], location_hint: str) -> tuple[str, list[dict], str | None]:
+async def _scrape_one(
+    scraper,
+    queries: list[str],
+    location_hint: str,
+    query_index: int,
+) -> tuple[str, list[dict], int | None, str | None]:
     source = scraper.source_name
     label = (
         getattr(scraper, "company_label", None)
@@ -74,25 +112,42 @@ async def _scrape_one(scraper, queries: list[str], location_hint: str) -> tuple[
     )
     step(f"SCRAPE_{source.upper()}", target=label)
     try:
-        batch = await asyncio.wait_for(
-            _fetch_from_scraper(scraper, queries, location_hint),
+        batch, total = await asyncio.wait_for(
+            _fetch_from_scraper(scraper, queries, location_hint, query_index),
             timeout=SCRAPER_TIMEOUT_SEC,
         )
-        step_done(f"SCRAPE_{source.upper()}", target=label, jobs=len(batch))
-        return source, batch, None
+        scraper_error = getattr(scraper, "last_error", None)
+        if not batch and scraper_error:
+            step_fail(f"SCRAPE_{source.upper()}", scraper_error)
+            return source, [], total, scraper_error
+        step_done(f"SCRAPE_{source.upper()}", target=label, jobs=len(batch), available=total)
+        return source, batch, total, None
     except asyncio.TimeoutError:
         msg = f"timed out after {SCRAPER_TIMEOUT_SEC}s"
         step_fail(f"SCRAPE_{source.upper()}", msg)
         logger.warning("Source %s (%s) timed out", source, label)
-        return source, [], msg
+        return source, [], None, msg
     except Exception as exc:
         msg = str(exc) or repr(exc)
         step_fail(f"SCRAPE_{source.upper()}", msg)
         logger.exception("Source %s (%s) failed", source, label)
-        return source, [], msg
+        return source, [], None, msg
 
 
-async def discover_jobs_for_candidate(db: Session, candidate_id: int) -> dict:
+async def discover_jobs_for_candidate(
+    db: Session,
+    candidate_id: int,
+    sources: list[str] | None = None,
+    remote_type: str | None = None,
+    fresh: bool = True,
+) -> dict:
+    """Live discovery for the candidate's role — no stored/static pool reuse.
+
+    When fresh=True (default), previous CandidateJob links for this candidate
+    are cleared first so `candidate_jobs` and `platform_counts` reflect ONLY
+    this live run across the selected platforms. Job rows themselves are kept
+    (Application history FK) but never reused as a pool.
+    """
     step("DISCOVERY_START", candidate_id=candidate_id)
 
     candidate = db.get(Candidate, candidate_id)
@@ -106,6 +161,14 @@ async def discover_jobs_for_candidate(db: Session, candidate_id: int) -> dict:
 
     step("BUILD_QUERIES", count=len(queries), queries=",".join(queries[:8]))
     scrapers = build_scrapers()
+
+    if sources:
+        scrapers = [s for s in scrapers if s.source_name in sources]
+        step(
+            "FILTER_SOURCES",
+            filtered=len(scrapers),
+            selected=",".join(sources),
+        )
     step(
         "INIT_SOURCES",
         total_sources=len(scrapers),
@@ -114,18 +177,44 @@ async def discover_jobs_for_candidate(db: Session, candidate_id: int) -> dict:
     )
 
     results = await asyncio.gather(
-        *[_scrape_one(scraper, queries, location_hint) for scraper in scrapers]
+        *[
+            _scrape_one(scraper, queries, location_hint, idx)
+            for idx, scraper in enumerate(scrapers)
+        ]
     )
 
     scraped: list[dict] = []
     source_stats: dict[str, dict] = {}
+    platform_counts: dict[str, dict] = {}
 
-    for source, batch, error in results:
+    for source, batch, site_total, error in results:
         stats = source_stats.setdefault(source, {"fetched": 0, "errors": 0})
         stats["fetched"] += len(batch)
         if error:
             stats["errors"] += 1
+            stats["error"] = error
         scraped.extend(batch)
+        # Exact available number for this role on this platform:
+        # site-reported total when the platform exposes it, else live fetched.
+        available = site_total if site_total is not None else len(batch)
+        entry = platform_counts.setdefault(
+            source, {"fetched": 0, "available": 0, "errors": 0}
+        )
+        entry["fetched"] += len(batch)
+        # Keep the max site total seen across scrapers sharing a source key
+        # (e.g. multiple Greenhouse boards roll up under "greenhouse").
+        if site_total is not None:
+            entry["available"] = max(int(entry["available"] or 0), int(site_total))
+        else:
+            entry["available"] += len(batch)
+        if error:
+            entry["errors"] += 1
+            entry["error"] = error
+
+    if fresh:
+        # Remove stale pool links so counts = this live run only.
+        db.query(CandidateJob).filter(CandidateJob.candidate_id == candidate_id).delete()
+        db.flush()
 
     step("DEDUPLICATE_AND_STORE", raw_jobs=len(scraped))
     created = 0
@@ -148,35 +237,91 @@ async def discover_jobs_for_candidate(db: Session, candidate_id: int) -> dict:
             row[0] for row in db.query(Job.dedup_hash).filter(Job.dedup_hash.in_(hash_list)).all()
         }
 
+    selected_hashes: list[str] = []
+    rows_to_add: list[Job] = []
     for item, dedup_hash in candidates:
         if dedup_hash in existing_hashes:
-            skipped += 1
+            if remote_type:
+                stored = (
+                    db.query(Job.remote_type).filter(Job.dedup_hash == dedup_hash).first()
+                )
+                if stored and stored[0] and stored[0].lower() != remote_type.lower():
+                    skipped += 1
+                    continue
+            selected_hashes.append(dedup_hash)
             continue
         try:
-            db.add(prepare_job_row(item, dedup_hash))
+            job_row = prepare_job_row(item, dedup_hash)
+            if remote_type and job_row.remote_type and job_row.remote_type.lower() != remote_type.lower():
+                skipped += 1
+                continue
+            rows_to_add.append(job_row)
             created += 1
         except Exception as exc:
             logger.warning("Skipped job %s @ %s: %s", item.get("title"), item.get("company"), exc)
             skipped += 1
 
+    db.add_all(rows_to_add)
+    db.flush()
+
+    candidate_job_ids: list[int] = []
+    if selected_hashes:
+        candidate_job_ids = [
+            row[0] for row in db.query(Job.id).filter(Job.dedup_hash.in_(selected_hashes)).all()
+        ]
+
+    if rows_to_add:
+        for row in rows_to_add:
+            candidate_job_ids.append(row.id)
+
+    if candidate_job_ids:
+        existing_links = {
+            row[0]
+            for row in db.query(CandidateJob.job_id)
+            .filter(
+                CandidateJob.candidate_id == candidate_id,
+                CandidateJob.job_id.in_(candidate_job_ids),
+            )
+            .all()
+        }
+        db.add_all(
+            [
+                CandidateJob(candidate_id=candidate_id, job_id=job_id)
+                for job_id in candidate_job_ids
+                if job_id not in existing_links
+            ]
+        )
+
     db.commit()
+    candidate_job_count = (
+        db.query(CandidateJob).filter(CandidateJob.candidate_id == candidate_id).count()
+    )
     total_jobs = db.query(Job).count()
 
     step_done(
         "DISCOVERY_COMPLETE",
         created=created,
         skipped=skipped,
+        candidate_jobs=candidate_job_count,
         total_jobs=total_jobs,
         sources=len(source_stats),
     )
 
+    role = queries[0] if queries else "software engineer"
+    total_available = sum(int(v.get("available", 0) or 0) for v in platform_counts.values())
+
     return {
         "candidate_id": candidate_id,
+        "role": role,
         "search_queries": queries,
         "scraped": len(scraped),
         "created": created,
         "skipped_duplicates": skipped,
+        "candidate_jobs": candidate_job_count,
         "total_jobs_in_db": total_jobs,
         "sources": source_stats,
+        "platform_counts": platform_counts,
+        "total_available": total_available,
+        "fresh": fresh,
         "source_catalog": SOURCE_CATALOG,
     }

@@ -12,11 +12,11 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.config import settings  # noqa: E402
-from app.database.models import Application, Candidate, Job, JobMatch, Resume  # noqa: E402
+from app.database.models import Application, Candidate, CandidateJob, Job, JobMatch, Resume  # noqa: E402
 from app.database.postgres import reset_postgres_sequences  # noqa: E402
 
 SQLITE_PATH = BACKEND_DIR / "resumebuild.db"
-TABLES = (Candidate, Resume, Job, JobMatch, Application)
+TABLES = (Candidate, Resume, Job, JobMatch, CandidateJob, Application)
 
 
 def main() -> None:

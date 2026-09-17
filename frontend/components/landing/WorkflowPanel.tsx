@@ -12,10 +12,36 @@ import {
 
 const PIPELINE = [
   { id: "upload", label: "Parse resume" },
-  { id: "discover", label: "Discover jobs" },
-  { id: "match", label: "Score matches" },
-  { id: "apply", label: "Track applications" },
+  { id: "login", label: "Log in to platforms" },
+  { id: "discover", label: "Discover & score jobs" },
+  { id: "apply", label: "Apply" },
 ];
+
+const PLATFORMS = [
+  { key: "linkedin", label: "LinkedIn", auth: "login required" },
+  { key: "indeed", label: "Indeed", auth: "free" },
+  { key: "foundit", label: "Foundit", auth: "free" },
+  { key: "naukri", label: "Naukri.com", auth: "login recommended" },
+  { key: "ziprecruiter", label: "ZipRecruiter", auth: "free" },
+  { key: "glassdoor", label: "Glassdoor", auth: "login recommended" },
+  { key: "greenhouse", label: "Greenhouse", auth: "free" },
+  { key: "remotive", label: "Remotive", auth: "free" },
+  { key: "remoteok", label: "RemoteOK", auth: "free" },
+  { key: "arbeitnow", label: "Arbeitnow", auth: "free" },
+];
+
+const JOB_TYPES = [
+  { key: "remote", label: "Remote" },
+  { key: "onsite", label: "On-site" },
+  { key: "hybrid", label: "Hybrid" },
+  { key: "", label: "Any" },
+];
+
+type PlatformSession = {
+  platform: string;
+  logged_in: boolean;
+  updated_at: string | null;
+};
 
 type Props = {
   loading: boolean;
@@ -28,11 +54,22 @@ type Props = {
   pipelineStep: number;
   message: string;
   error: string;
+  selectedPlatforms: string[];
+  remoteType: string;
+  sessions: PlatformSession[] | null;
+  loginPlatform: string | null;
   onUpload: (file: File) => void;
+  onLogin: (platform: string) => void;
+  onLoginDone: () => void;
   onDiscoverAndMatch: () => void;
   onPersonalize: (jobId: number) => void;
   onApply: (match: MatchResult) => void;
   onBotApply?: (match: MatchResult) => void;
+  onAutoApplyAll?: () => void;
+  autoApplyArmed?: boolean;
+  onAutoApplyArmedChange?: (armed: boolean) => void;
+  onPlatformToggle?: (platform: string) => void;
+  onRemoteTypeChange?: (type: string) => void;
   botRunning?: boolean;
 };
 
@@ -47,11 +84,22 @@ export function WorkflowPanel({
   pipelineStep,
   message,
   error,
+  selectedPlatforms,
+  remoteType,
+  sessions,
+  loginPlatform,
   onUpload,
+  onLogin,
+  onLoginDone,
   onDiscoverAndMatch,
   onPersonalize,
   onApply,
   onBotApply,
+  onAutoApplyAll,
+  autoApplyArmed = false,
+  onAutoApplyArmedChange,
+  onPlatformToggle,
+  onRemoteTypeChange,
   botRunning = false,
 }: Props) {
   const passedCount = matches.filter((m) => m.passed_threshold).length;
@@ -168,19 +216,95 @@ export function WorkflowPanel({
           <div className="card-light flex flex-col space-y-5">
             <div>
               <p className="section-tag">Step 2</p>
-              <h3 className="mt-2 text-2xl font-semibold text-ink">Discover & match</h3>
+              <h3 className="mt-2 text-2xl font-semibold text-ink">Log in to job platforms</h3>
               <p className="mt-2 text-sm text-ink-500">
-                Profile-driven search across Indeed, ZipRecruiter, LinkedIn, Glassdoor, and Greenhouse companies.
+                Uses your own Chrome where you&apos;re already logged in — no fresh bot browser.
+                Click a platform, confirm, and search unlocks right after.
+              </p>
+            </div>
+
+            {!candidateId && (
+              <p className="text-center text-xs text-ink-400">Upload a resume first</p>
+            )}
+
+            {candidateId && !sessions && (
+              <p className="text-center text-xs text-ink-400">Loading login status…</p>
+            )}
+
+            {candidateId && sessions && (
+              <div className="grid grid-cols-2 gap-2">
+                {sessions.map((s) => (
+                  <div
+                    key={s.platform}
+                    className={`rounded-2xl border px-3 py-2.5 text-sm ${
+                      s.logged_in ? "border-ink bg-ink text-white" : "border-ink-200 bg-white"
+                    }`}
+                  >
+                    <p className="font-semibold capitalize">
+                      {s.platform} {s.logged_in && "✓"}
+                    </p>
+                    {!s.logged_in && (
+                      <button
+                        type="button"
+                        className="mt-1 text-xs font-semibold text-ink underline underline-offset-2"
+                        disabled={loading || (loginPlatform !== null && loginPlatform !== s.platform)}
+                        onClick={() => onLogin(s.platform)}
+                      >
+                        {loginPlatform === s.platform ? "Logging in…" : "Log in"}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {loginPlatform !== null && (
+              <button className="btn-dark w-full" onClick={onLoginDone}>
+                Login done — save session & show my jobs
+              </button>
+            )}
+          </div>
+
+          <div className="card-light flex flex-col space-y-5 lg:col-span-2">
+            <div>
+              <p className="section-tag">Step 3</p>
+              <h3 className="mt-2 text-2xl font-semibold text-ink">Available jobs for your role</h3>
+              <p className="mt-2 text-sm text-ink-500">
+                Live search across LinkedIn, Indeed, Foundit, and Naukri.com — exact available
+                counts per platform, no stored pool.
               </p>
             </div>
 
             {discovery && (
               <div className="rounded-3xl border border-ink-200 bg-ink-50 p-4 text-sm text-ink-600">
                 <p className="font-semibold text-ink">
-                  +{discovery.created} new jobs · {discovery.total_jobs_in_db} in pool
+                  {discovery.total_available ?? discovery.candidate_jobs} live jobs for “
+                  {discovery.role ?? discovery.search_queries[0] ?? "this role"}” · fresh search, no pool
                 </p>
+                {discovery.platform_counts && (
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    {Object.entries(discovery.platform_counts).map(([platform, c]) => (
+                      <div
+                        key={platform}
+                        className="rounded-2xl border border-ink-200 bg-white px-3 py-2"
+                      >
+                        <p className="text-xs font-semibold capitalize text-ink">{platform}</p>
+                        <p className="font-mono text-lg font-bold text-ink">
+                          {c.available}
+                          <span className="ml-1 text-xs font-normal text-ink-400">available</span>
+                        </p>
+                        <p className="text-[11px] text-ink-400">
+                          {c.fetched} fetched live{c.errors ? ` · ${c.errors} error` : ""}
+                        </p>
+                        {c.error && (
+                          <p className="mt-1 text-[11px] leading-snug text-amber-700">{c.error}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <p className="mt-2 text-xs text-ink-500">
-                  {discovery.search_queries.slice(0, 5).join(" · ")}
+                  {(discovery.search_queries ?? []).slice(0, 5).join(" · ")}
                 </p>
                 {loadingPhase === "match" && (
                   <p className="mt-2 text-xs font-medium text-ink">
@@ -190,25 +314,94 @@ export function WorkflowPanel({
               </div>
             )}
 
+            {candidateId && !loading && !discovery && (
+              <div className="space-y-4 rounded-3xl border border-ink-200 bg-ink-50 p-4">
+                <div>
+                  <p className="mb-2 text-sm font-medium text-ink">Select platforms to search</p>
+                  <div className="flex flex-wrap gap-2">
+                    {PLATFORMS.map((p) => (
+                      <button
+                        key={p.key}
+                        type="button"
+                        onClick={() => onPlatformToggle?.(p.key)}
+                        className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
+                          selectedPlatforms.includes(p.key)
+                            ? "border-ink bg-ink text-white"
+                            : "border-ink-200 bg-white text-ink-600 hover:border-ink-400"
+                        }`}
+                      >
+                        {p.label}
+                        {p.auth === "login required" && " 🔒"}
+                        {p.auth === "login recommended" && " ⚡"}
+                      </button>
+                    ))}
+                  </div>
+                  {selectedPlatforms.some(
+                    (sp) => PLATFORMS.find((p) => p.key === sp)?.auth === "login required",
+                  ) && (
+                    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                      <p className="font-medium">Platforms requiring login selected:</p>
+                      <ul className="mt-1 list-inside list-disc">
+                        {selectedPlatforms
+                          .map((sp) => PLATFORMS.find((p) => p.key === sp))
+                          .filter((p) => p?.auth === "login required")
+                          .map((p) => (
+                            <li key={p!.key}>
+                              <strong>{p!.label}</strong> — Log in via Step 2 above for complete results and applying.
+                            </li>
+                          ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <p className="mb-2 text-sm font-medium text-ink">Job type preference</p>
+                  <div className="flex flex-wrap gap-2">
+                    {JOB_TYPES.map((t) => (
+                      <button
+                        key={t.key}
+                        type="button"
+                        onClick={() => onRemoteTypeChange?.(t.key)}
+                        className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
+                          remoteType === t.key
+                            ? "border-ink bg-ink text-white"
+                            : "border-ink-200 bg-white text-ink-600 hover:border-ink-400"
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <button
               className="btn-dark w-full"
-              disabled={!candidateId || loading}
+              disabled={!candidateId || loading || (selectedPlatforms.length === 0 && !discovery)}
               onClick={() => {
                 logClick("click_discover_and_match");
                 onDiscoverAndMatch();
               }}
             >
               {loadingPhase === "discover"
-                ? "Discovering jobs…"
+                ? "Searching live jobs…"
                 : loadingPhase === "match"
                   ? "Scoring matches…"
-                  : "Discover & match jobs"}
+                  : "Show available jobs"}
             </button>
+
+            {candidateId && sessions && !sessions.some((s) => s.logged_in) && !discovery && !loading && (
+              <p className="text-center text-xs text-amber-700">
+                Tip: log in via Step 2 first for complete results on every platform — or search
+                now and log in before applying.
+              </p>
+            )}
 
             {discovery && !loading && matches.length === 0 && (
               <p className="text-center text-xs text-ink-500">
-                Jobs are stored in the API pool. Scored matches appear in the list below once
-                matching finishes.
+                Live search finished on every selected platform. Scored matches appear below once
+                matching finishes — no stored pool is reused.
               </p>
             )}
 
@@ -228,14 +421,42 @@ export function WorkflowPanel({
 
         {matches.length > 0 && (
           <div className="mt-16 space-y-6">
-            <div className="flex items-end justify-between gap-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <p className="section-tag">Results</p>
                 <h3 className="mt-2 text-3xl font-bold text-ink">Top job matches</h3>
+                <p className="mt-1 text-sm text-ink-500">
+                  Exact live counts shown above per selected platform. Confirm, then auto-apply.
+                </p>
               </div>
               <Link href="/dashboard" className="btn-ghost text-sm">
                 Track all →
               </Link>
+            </div>
+
+            <div className="flex flex-col gap-3 rounded-3xl border border-ink-200 bg-white p-4 sm:flex-row sm:items-center">
+              <label className="flex flex-1 cursor-pointer items-start gap-3 text-sm text-ink-600">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4"
+                  checked={autoApplyArmed}
+                  onChange={(e) => onAutoApplyArmedChange?.(e.target.checked)}
+                />
+                <span>
+                  I reviewed the exact available-job counts and confirm auto-apply to strong
+                  matches (≥ 75%).
+                </span>
+              </label>
+              {onAutoApplyAll && (
+                <button
+                  className="btn-dark shrink-0"
+                  disabled={loading || botRunning || !autoApplyArmed}
+                  onClick={() => onAutoApplyAll()}
+                  title={!autoApplyArmed ? "Confirm counts first" : "Auto-apply strong matches"}
+                >
+                  {botRunning ? "Bot running…" : "Auto-apply all ≥ 75%"}
+                </button>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -276,7 +497,10 @@ export function WorkflowPanel({
                     {onBotApply && match.apply_url && (
                       <button
                         className="btn-dark min-w-[120px]"
-                        disabled={loading || botRunning || appliedIds.has(match.job_id)}
+                        disabled={
+                          loading || botRunning || appliedIds.has(match.job_id) || !autoApplyArmed
+                        }
+                        title={!autoApplyArmed ? "Confirm counts above first" : "Auto apply"}
                         onClick={() => void onBotApply(match)}
                       >
                         {botRunning ? "Bot running…" : "Auto apply"}

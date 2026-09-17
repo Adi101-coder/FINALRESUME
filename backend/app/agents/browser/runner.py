@@ -31,6 +31,70 @@ BOARD_CONFIGS = {
 }
 
 
+def system_chrome_user_data_dir() -> Path | None:
+    """User's real Chrome profile dir (where they are already logged in).
+
+    Override with CHROME_USER_DATA_DIR env. Returns None when Chrome is absent.
+    """
+    import os
+    import sys
+
+    override = os.environ.get("CHROME_USER_DATA_DIR", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        return path if path.exists() else None
+    home = Path.home()
+    if sys.platform == "darwin":
+        path = home / "Library" / "Application Support" / "Google" / "Chrome"
+    elif sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", "")
+        path = Path(local) / "Google" / "Chrome" / "User Data" if local else home
+    else:
+        path = home / ".config" / "google-chrome"
+    return path if path.exists() else None
+
+
+def open_system_chrome_context(pw, *, viewport: dict | None = None):
+    """Open the user's own Chrome (persistent profile) via Playwright.
+
+    This reuses the browser where the user is already logged in — no fresh
+    bot browser, no logging in again. Requires Google Chrome installed.
+    Raises RuntimeError with a human-readable reason when unusable.
+    """
+    import os
+
+    user_data_dir = system_chrome_user_data_dir()
+    if user_data_dir is None:
+        raise RuntimeError(
+            "Google Chrome not found on this machine. Install Chrome or log in "
+            "via the fallback browser window."
+        )
+    profile = os.environ.get("CHROME_PROFILE", "Default").strip() or "Default"
+    try:
+        context = pw.chromium.launch_persistent_context(
+            str(user_data_dir),
+            channel="chrome",
+            headless=False,
+            slow_mo=80,
+            viewport=viewport or {"width": 1400, "height": 900},
+            # Hide automation so "Sign in with Google" isn't rejected as insecure.
+            ignore_default_args=["--enable-automation"],
+            args=[
+                f"--profile-directory={profile}",
+                "--disable-blink-features=AutomationControlled",
+            ],
+        )
+        return context
+    except Exception as exc:
+        msg = str(exc)
+        if "profile" in msg.lower() or "in use" in msg.lower() or "lock" in msg.lower():
+            raise RuntimeError(
+                "Your Chrome is open and locking its profile. Close Chrome completely, "
+                "then click Log in again — it will reuse your logged-in sessions."
+            ) from exc
+        raise RuntimeError(f"Could not open your Chrome profile ({msg}).") from exc
+
+
 class AutoApplyRunner:
     """Runs job applications in a visible browser; pauses for CAPTCHA / login."""
 
@@ -74,6 +138,11 @@ class AutoApplyRunner:
         if self._playwright:
             try:
                 self._playwright.stop()
+            except Exception:
+                pass
+        if self.db:
+            try:
+                self.db.close()
             except Exception:
                 pass
 

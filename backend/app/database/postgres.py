@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from sqlalchemy import Engine, text
 
-from app.database.models import Application, Candidate, Job, JobMatch, Resume
+from app.database.models import Application, Candidate, CandidateJob, Job, JobMatch, Resume
 
 TABLES_WITH_SERIAL_ID = (
     Candidate.__tablename__,
     Resume.__tablename__,
     Job.__tablename__,
     JobMatch.__tablename__,
+    CandidateJob.__tablename__,
     Application.__tablename__,
 )
 

@@ -98,7 +98,7 @@ def apply_glassdoor(page: Page, url: str, profile: dict, resume_path: str) -> Ap
 def apply_greenhouse(page: Page, url: str, profile: dict, resume_path: str) -> ApplyOutcome:
     """Greenhouse applications — structured forms on boards.greenhouse.io."""
     logger.info("Greenhouse apply: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(2000)
     _guard_captcha(page, "greenhouse")
 
@@ -158,6 +158,28 @@ def apply_greenhouse(page: Page, url: str, profile: dict, resume_path: str) -> A
     )
 
 
+def apply_naukri(page: Page, url: str, profile: dict, resume_path: str) -> ApplyOutcome:
+    logger.info("Naukri apply (generic wizard): %s", url)
+    page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+    page.wait_for_timeout(2000)
+    _guard_captcha(page, "naukri")
+    if click_apply_entrypoint(page):
+        page.wait_for_timeout(1500)
+    status = _wizard_continue(page, profile, resume_path, "naukri")
+    return ApplyOutcome(status, f"Naukri apply finished with status={status}.", "naukri", url)
+
+
+def apply_foundit(page: Page, url: str, profile: dict, resume_path: str) -> ApplyOutcome:
+    logger.info("Foundit apply (generic wizard): %s", url)
+    page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+    page.wait_for_timeout(2000)
+    _guard_captcha(page, "foundit")
+    if click_apply_entrypoint(page):
+        page.wait_for_timeout(1500)
+    status = _wizard_continue(page, profile, resume_path, "foundit")
+    return ApplyOutcome(status, f"Foundit apply finished with status={status}.", "foundit", url)
+
+
 def detect_platform(url: str) -> str | None:
     url_lower = url.lower()
     if "greenhouse.io" in url_lower:
@@ -166,6 +188,10 @@ def detect_platform(url: str) -> str | None:
         return "linkedin"
     if "indeed.com" in url_lower:
         return "indeed"
+    if "naukri.com" in url_lower:
+        return "naukri"
+    if "foundit.in" in url_lower or "monsterindia" in url_lower:
+        return "foundit"
     if "ziprecruiter.com" in url_lower:
         return "ziprecruiter"
     if "glassdoor.com" in url_lower:
@@ -181,6 +207,10 @@ def apply_for_platform(page: Page, url: str, profile: dict, resume_path: str) ->
         return apply_linkedin(page, url, profile, resume_path)
     if platform == "indeed":
         return apply_indeed(page, url, profile, resume_path)
+    if platform == "naukri":
+        return apply_naukri(page, url, profile, resume_path)
+    if platform == "foundit":
+        return apply_foundit(page, url, profile, resume_path)
     if platform == "ziprecruiter":
         return apply_ziprecruiter(page, url, profile, resume_path)
     if platform == "glassdoor":

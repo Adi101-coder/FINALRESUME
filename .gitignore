@@ -5,10 +5,16 @@ __pycache__/
 venv/
 .env
 
+# Databases (local dev data, candidate PII, login sessions — never commit)
+*.db
+*.sqlite
+*.sqlite3
+
 # Node
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # Storage & logs
 storage/

@@ -13,7 +13,7 @@ from app.database.models import PlatformSession
 
 logger = logging.getLogger("app.session_store")
 
-PLATFORMS = ("linkedin", "indeed", "ziprecruiter", "glassdoor")
+PLATFORMS = ("linkedin", "indeed", "foundit", "naukri", "ziprecruiter", "glassdoor")
 
 
 def get_session(db: Session, candidate_id: int, platform: str) -> dict | None:
@@ -83,3 +83,46 @@ def list_sessions(db: Session, candidate_id: int) -> list[dict]:
             }
         )
     return result
+
+
+def carry_over_sessions(db: Session, new_candidate_id: int) -> int:
+    """Copy the newest login session per platform onto a freshly uploaded candidate.
+
+    Logins belong to the person (same browser/machine), not to one upload —
+    without this every re-upload looks 'logged out' again.
+    Returns the number of sessions carried over.
+    """
+    latest: dict[str, PlatformSession] = {}
+    rows = (
+        db.query(PlatformSession)
+        .filter(PlatformSession.candidate_id != new_candidate_id)
+        .order_by(PlatformSession.updated_at.desc())
+        .all()
+    )
+    for row in rows:
+        if row.platform not in latest and row.storage_state:
+            latest[row.platform] = row
+    carried = 0
+    for platform, src in latest.items():
+        exists = (
+            db.query(PlatformSession)
+            .filter(
+                PlatformSession.candidate_id == new_candidate_id,
+                PlatformSession.platform == platform,
+            )
+            .first()
+        )
+        if exists:
+            continue
+        db.add(
+            PlatformSession(
+                candidate_id=new_candidate_id,
+                platform=platform,
+                storage_state=dict(src.storage_state),
+            )
+        )
+        carried += 1
+    if carried:
+        db.commit()
+        logger.info("Carried over %d sessions to candidate_id=%s", carried, new_candidate_id)
+    return carried

@@ -9,6 +9,7 @@ import {
   getBotStatus,
   startBot,
   stopBot,
+  signalHumanReady,
   type AutoApplyConfig,
   type BotStatus,
 } from "@/lib/api";
@@ -18,13 +19,21 @@ type Props = {
   onApplicationsChanged?: () => void;
 };
 
-const PLATFORMS = ["linkedin", "indeed", "ziprecruiter", "glassdoor"];
+const PLATFORMS = ["linkedin", "indeed", "foundit", "naukri"];
+
+const JOB_TYPES = [
+  { key: "", label: "Any" },
+  { key: "remote", label: "Remote" },
+  { key: "onsite", label: "On-site" },
+  { key: "hybrid", label: "Hybrid" },
+];
 
 export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
   const [config, setConfig] = useState<AutoApplyConfig | null>(null);
   const [titlesInput, setTitlesInput] = useState("Software Developer, Frontend Developer");
   const [location, setLocation] = useState("Remote");
   const [platform, setPlatform] = useState("linkedin");
+  const [remoteType, setRemoteType] = useState("");
   const [botAvail, setBotAvail] = useState(false);
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -33,24 +42,44 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
 
   const load = useCallback(async (id: number) => {
     try {
-      const [data, avail, status] = await Promise.all([
-        getAutoApplyConfig(id),
-        getBotAvailability().catch(() => ({ available: false, message: "", platforms: [] })),
-        getBotStatus(id).catch(() => null),
-      ]);
+      const data = await getAutoApplyConfig(id);
       setConfig(data);
       setTitlesInput(data.job_titles.join(", "));
       setLocation(data.location || "Remote");
-      setBotAvail(avail.available);
-      if (status) setBotStatus(status);
+      setRemoteType(data.remote_type || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load auto-apply settings");
     }
   }, []);
 
+  const checkBotAvailability = useCallback(async () => {
+    try {
+      const avail = await getBotAvailability();
+      setBotAvail(avail.available);
+    } catch {
+      setBotAvail(false);
+    }
+  }, []);
+
+  const loadBotStatus = useCallback(async (id: number) => {
+    try {
+      const status = await getBotStatus(id);
+      setBotStatus(status);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   useEffect(() => {
-    if (candidateId) void load(candidateId);
-  }, [candidateId, load]);
+    if (candidateId) {
+      void load(candidateId);
+      void loadBotStatus(candidateId);
+    }
+  }, [candidateId, load, loadBotStatus]);
+
+  useEffect(() => {
+    void checkBotAvailability();
+  }, [checkBotAvailability]);
 
   useEffect(() => {
     if (!candidateId || botStatus?.state !== "running") return;
@@ -71,7 +100,7 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
     setError("");
     try {
       const titles = titlesInput.split(",").map((t) => t.trim()).filter(Boolean);
-      const updated = await updateAutoApplyConfig(candidateId, titles, location);
+      const updated = await updateAutoApplyConfig(candidateId, titles, location, remoteType || undefined);
       setConfig(updated);
       setMessage("Job search preferences saved.");
     } catch (err) {
@@ -149,7 +178,17 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
 
       {!botAvail && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-          Bot runner unavailable — start backend locally with Playwright installed.
+          <p className="font-medium">Bot runner unavailable</p>
+          <p className="mt-1">
+            Make sure the backend is running locally with Playwright installed.
+            Run <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-xs">playwright install chromium</code> if you haven&apos;t already.
+          </p>
+          <button
+            className="mt-2 text-xs font-medium text-amber-700 underline"
+            onClick={() => void checkBotAvailability()}
+          >
+            Retry connection check
+          </button>
         </div>
       )}
 
@@ -201,6 +240,26 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
             onChange={(e) => setLocation(e.target.value)}
             placeholder="Remote"
           />
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-500">Job type</label>
+            <div className="flex flex-wrap gap-2">
+              {JOB_TYPES.map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  disabled={running}
+                  onClick={() => setRemoteType(t.key)}
+                  className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    remoteType === t.key
+                      ? "border-ink bg-ink text-white"
+                      : "border-ink-200 bg-white text-ink-600 hover:border-ink-400"
+                  }`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <button className="btn-outline w-full" disabled={loading || running} onClick={() => void handleSaveTitles()}>
             Save search preferences
           </button>
@@ -213,9 +272,17 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
             Start auto-apply
           </button>
         ) : (
-          <button className="btn-dark" onClick={() => void handleStopBot()}>
-            Stop bot
-          </button>
+          <>
+            <button className="btn-dark" onClick={() => void handleStopBot()}>
+              Stop bot
+            </button>
+            <button
+              className="btn-outline"
+              onClick={() => void signalHumanReady().then(() => setMessage("Signal sent — bot will resume."))}
+            >
+              Login done / CAPTCHA solved
+            </button>
+          </>
         )}
         {botStatus && (
           <span className="self-center text-sm text-ink-500">
@@ -226,17 +293,27 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
 
       {config?.sessions && (
         <div>
-          <p className="mb-2 text-sm font-medium text-ink">Login status</p>
+          <p className="mb-2 text-sm font-medium text-ink">Login status (log in via Step 2 above)</p>
           <div className="flex flex-wrap gap-2">
             {config.sessions.map((s) => (
               <span
                 key={s.platform}
                 className={`source-pill ${s.logged_in ? "border-ink bg-ink text-white" : ""}`}
               >
-                {s.platform} {s.logged_in ? "✓" : "— log in via script"}
+                {s.platform} {s.logged_in ? "✓" : "— not logged in"}
               </span>
             ))}
           </div>
+          {running && (
+            <button
+              className="btn-outline mt-3"
+              onClick={() =>
+                void signalHumanReady().then(() => setMessage("Signal sent — bot will resume."))
+              }
+            >
+              Login done / CAPTCHA solved
+            </button>
+          )}
         </div>
       )}
 

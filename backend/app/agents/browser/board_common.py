@@ -136,14 +136,14 @@ def complete_apply_wizard(page: Page, profile: dict, resume_path: str, platform:
 def apply_job_url(page: Page, url: str, profile: dict, resume_path: str, config: BoardConfig) -> dict:
     title = profile.get("_job_title", "Job")
     company = profile.get("_job_company", "")
-    page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(2500)
 
     if captcha_present(page):
         wait_for_human(page, f"{config.platform}: security check — solve then press ENTER.")
     if "/login" in page.url or "auth" in page.url.lower():
         wait_for_human(page, f"{config.platform}: log in in browser, then press ENTER.")
-        page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+        page.goto(url, wait_until="domcontentloaded", timeout=300_000)
         page.wait_for_timeout(2000)
 
     if not click_apply_button(page, config):
@@ -189,7 +189,7 @@ def apply_from_search(
     applied_urls = applied_urls or set()
     results: list[dict] = []
     search_url = config.search_url(query, location, start_offset)
-    page.goto(search_url, wait_until="domcontentloaded", timeout=90_000)
+    page.goto(search_url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(3000)
 
     cards = page.locator(config.card_selector)

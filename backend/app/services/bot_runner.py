@@ -156,6 +156,175 @@ class BotRunnerService:
         self._log(run, "Stop requested — finishing current job…")
         return self.get_status(candidate_id)
 
+    LOGIN_URLS = {
+        "linkedin": "https://www.linkedin.com/login",
+        "indeed": "https://secure.indeed.com/auth/login",
+        "foundit": "https://www.foundit.in/",
+        "naukri": "https://www.naukri.com/nlogin/login",
+        "ziprecruiter": "https://www.ziprecruiter.com/auth/login",
+        "glassdoor": "https://www.glassdoor.com/profile/login_input.htm",
+    }
+
+    def start_login(self, candidate_id: int, *, platform: str) -> dict:
+        """Open the platform login page so a new user can log in from the website.
+
+        The run ends when the human presses 'Login done' (or login is detected);
+        the session cookies are then saved for this candidate's future applies.
+        """
+        if not self._playwright_available():
+            raise RuntimeError("Playwright not installed. Run: playwright install chromium")
+
+        if platform not in self.LOGIN_URLS:
+            raise RuntimeError(f"Unsupported platform: {platform}")
+
+        with self._lock:
+            existing = self._runs.get(candidate_id)
+            if existing and existing.state == BotState.RUNNING:
+                raise RuntimeError("Bot already running for this candidate. Stop it first.")
+
+            run = BotRun(
+                run_id=str(uuid.uuid4())[:8],
+                candidate_id=candidate_id,
+                platform=platform,
+                state=BotState.RUNNING,
+                started_at=datetime.utcnow().isoformat(),
+            )
+            self._runs[candidate_id] = run
+
+        thread = threading.Thread(
+            target=self._run_login,
+            args=(run, platform),
+            daemon=True,
+            name=f"bot-login-{candidate_id}",
+        )
+        run._thread = thread
+        thread.start()
+        return self.get_status(candidate_id)
+
+    @staticmethod
+    def _looks_logged_in(page, platform: str) -> bool:
+        try:
+            url = (page.url or "").lower()
+            body = (page.inner_text("body") or "").lower()
+        except Exception:
+            return False
+        if platform == "linkedin":
+            return "/feed" in url or "sign out" in body
+        if platform == "indeed":
+            return "sign out" in body or "/profile" in url or "my jobs" in body
+        if platform == "naukri":
+            return "/mnjuser/" in url or "my naukri" in body
+        if platform == "foundit":
+            return "sign out" in body or "logout" in body
+        return "sign out" in body or "log out" in body
+
+    def _run_login(self, run: BotRun, platform: str) -> None:
+        from playwright.sync_api import sync_playwright
+
+        from app.agents.browser.captcha import human_signaled
+        from app.agents.browser.runner import open_system_chrome_context
+
+        login_url = self.LOGIN_URLS[platform]
+        self._log(
+            run,
+            f"Opening your Chrome on {platform} (reuses your existing logins).",
+        )
+        try:
+            with sync_playwright() as pw:
+                try:
+                    context = open_system_chrome_context(pw)
+                    self._log(run, "Your Chrome profile opened — checking login status…")
+                except RuntimeError as exc:
+                    # Fallback: fresh window with manual login (old behavior).
+                    self._log(run, f"{exc} Opening a separate login window instead.", level="warning")
+                    browser = pw.chromium.launch(
+                        headless=False,
+                        slow_mo=80,
+                        ignore_default_args=["--enable-automation"],
+                        args=["--disable-blink-features=AutomationControlled"],
+                    )
+                    context = browser.new_context(viewport={"width": 1400, "height": 900})
+                    context._owned_browser = browser  # type: ignore[attr-defined]
+                try:
+                    pages = context.pages
+                    page = pages[0] if pages else context.new_page()
+                    try:
+                        page.goto(login_url, wait_until="domcontentloaded", timeout=120_000)
+                    except Exception:
+                        pass
+                    deadline = time.time() + 300
+                    logged_in = self._looks_logged_in(page, platform)
+                    if logged_in:
+                        self._log(run, f"Already logged in to {platform} — saving session.")
+                    else:
+                        self._log(
+                            run,
+                            f"Log in to {platform} in the opened Chrome window, "
+                            "then press 'Login done' here.",
+                        )
+                    while not logged_in and time.time() < deadline:
+                        if run.stop_requested:
+                            self._log(run, "Login cancelled.")
+                            break
+                        if human_signaled():
+                            logged_in = True
+                            break
+                        if self._looks_logged_in(page, platform):
+                            logged_in = True
+                            self._log(run, f"{platform} login detected.")
+                            break
+                        time.sleep(3)
+                    if not logged_in and not run.stop_requested:
+                        raise TimeoutError("Login timed out after 5 minutes.")
+
+                    if logged_in:
+                        path = self._session_dir / f"{platform}_session.json"
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        context.storage_state(path=path)
+                        db = SessionLocal()
+                        try:
+                            from app.services.session_store import save_session_from_file
+
+                            save_session_from_file(db, run.candidate_id, platform, path)
+                        finally:
+                            db.close()
+                        with self._lock:
+                            run.submitted += 1
+                        self._log(run, f"{platform} session saved. You can now auto-apply.")
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                    owned = getattr(context, "_owned_browser", None)
+                    if owned is not None:
+                        try:
+                            owned.close()
+                        except Exception:
+                            pass
+                except Exception:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                    owned = getattr(context, "_owned_browser", None)
+                    if owned is not None:
+                        try:
+                            owned.close()
+                        except Exception:
+                            pass
+                    raise
+
+            with self._lock:
+                run.state = BotState.IDLE
+                run.stopped_at = datetime.utcnow().isoformat()
+        except Exception as exc:
+            logger.exception("Bot login failed")
+            with self._lock:
+                run.state = BotState.ERROR
+                run.error = str(exc)
+                run.stopped_at = datetime.utcnow().isoformat()
+            self._log(run, f"Login error: {exc}", level="error")
+
     def start(
         self,
         candidate_id: int,
@@ -171,6 +340,9 @@ class BotRunnerService:
     ) -> dict:
         if not self._playwright_available():
             raise RuntimeError("Playwright not installed. Run: playwright install chromium")
+
+        if platform not in ("linkedin", "indeed", "foundit", "naukri", "ziprecruiter", "glassdoor"):
+            raise RuntimeError(f"Unsupported platform: {platform}")
 
         with self._lock:
             existing = self._runs.get(candidate_id)
@@ -195,6 +367,21 @@ class BotRunnerService:
         run._thread = thread
         thread.start()
         return self.get_status(candidate_id)
+
+    def _check_session_valid(self, candidate_id: int, platform: str) -> bool:
+        """Check if a valid session exists for the platform."""
+        session_file = self._session_dir / f"{platform}_session.json"
+        if session_file.exists():
+            return True
+        db = SessionLocal()
+        try:
+            from app.services.session_store import get_session
+            state = get_session(db, candidate_id, platform)
+            return state is not None
+        except Exception:
+            return False
+        finally:
+            db.close()
 
     def _prepare_session(self, candidate_id: int) -> None:
         db = SessionLocal()
@@ -234,6 +421,15 @@ class BotRunnerService:
             db.close()
 
         self._prepare_session(run.candidate_id)
+
+        if not self._check_session_valid(run.candidate_id, platform):
+            self._log(
+                run,
+                f"No valid {platform} session found. The bot will open the browser for login. "
+                "Complete login in the browser window, then the bot will resume.",
+                level="warning",
+            )
+
         self._log(run, f"Starting {platform} bot (continuous={continuous})")
 
         def on_result(result: dict) -> None:
@@ -252,7 +448,7 @@ class BotRunnerService:
                 headless=False,
                 slow_mo_ms=80,
                 candidate_id=run.candidate_id,
-                db=None,
+                db=SessionLocal(),
             ) as runner:
                 runner.on_apply_result = on_result
 

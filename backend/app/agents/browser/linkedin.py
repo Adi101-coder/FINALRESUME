@@ -479,12 +479,12 @@ def apply_linkedin_from_search(
     url = _search_url(query, location, start=start_offset)
 
     logger.info("LinkedIn search batch: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(3000)
 
     if "/login" in page.url or "authwall" in page.url:
         wait_for_human(page, "LinkedIn: log in in the browser, then press ENTER.")
-        page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+        page.goto(url, wait_until="domcontentloaded", timeout=300_000)
         page.wait_for_timeout(2500)
 
     if captcha_present(page):
@@ -622,7 +622,7 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
     from app.agents.browser.platform_handlers import ApplyOutcome
 
     logger.info("LinkedIn job page apply: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(3500)
 
     if captcha_present(page):
@@ -630,7 +630,7 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
 
     if "/login" in page.url or "authwall" in page.url:
         wait_for_human(page, "LinkedIn: log in manually, then press ENTER.")
-        page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+        page.goto(url, wait_until="domcontentloaded", timeout=300_000)
         page.wait_for_timeout(3000)
 
     if already_applied(page):

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 
 import faiss
@@ -14,6 +15,8 @@ from app.config import settings
 logger = logging.getLogger("app.embeddings")
 
 DIM = 384
+
+MODEL_LOAD_TIMEOUT_SEC = 15
 
 
 class EmbeddingService:
@@ -27,19 +30,41 @@ class EmbeddingService:
         self._meta_path = settings.vector_index_path / "metadata.json"
         self._index_path = settings.vector_index_path / "index.faiss"
 
+    def _try_load_model(self):
+        logger.info("Loading embedding model: %s", settings.embedding_model)
+        from sentence_transformers import SentenceTransformer
+        return SentenceTransformer(settings.embedding_model)
+
     @property
     def model(self):
         if self._use_fallback:
             return None
         if self._model is None:
             try:
-                logger.info("Loading embedding model: %s", settings.embedding_model)
-                from sentence_transformers import SentenceTransformer
-
-                self._model = SentenceTransformer(settings.embedding_model)
-                logger.info("Embedding model loaded")
+                result = [None]
+                exc_holder = [None]
+                def _load():
+                    try:
+                        result[0] = self._try_load_model()
+                    except Exception as e:
+                        exc_holder[0] = e
+                t = threading.Thread(target=_load, daemon=True)
+                t.start()
+                t.join(timeout=MODEL_LOAD_TIMEOUT_SEC)
+                if t.is_alive():
+                    logger.warning(
+                        "Embedding model load timed out after %ds, using fallback",
+                        MODEL_LOAD_TIMEOUT_SEC,
+                    )
+                    self._use_fallback = True
+                elif exc_holder[0]:
+                    logger.warning("Embedding model unavailable, using fallback: %s", exc_holder[0])
+                    self._use_fallback = True
+                else:
+                    self._model = result[0]
+                    logger.info("Embedding model loaded")
             except Exception as exc:
-                logger.warning("Embedding model unavailable, using fallback: %s", exc)
+                logger.warning("Embedding model load failed, using fallback: %s", exc)
                 self._use_fallback = True
         return self._model
 

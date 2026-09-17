@@ -33,7 +33,7 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)):
 @router.get("", response_model=list[JobResponse])
 def list_jobs(
     db: Session = Depends(get_db),
-    limit: int = Query(default=50, le=200),
+    limit: int = Query(default=200, le=500),
     source: str | None = None,
 ):
     query = db.query(Job).order_by(Job.created_at.desc())
@@ -41,14 +41,6 @@ def list_jobs(
         query = query.filter(Job.source == source)
     return query.limit(limit).all()
 
-
-@router.post("/seed", response_model=dict)
-def seed_sample_jobs(db: Session = Depends(get_db)):
-    from app.services.seed import seed_jobs
-
-    created = seed_jobs(db)
-    logger.info("Seeded %d sample jobs", created)
-    return {"created": created}
 
 @router.get("/sources")
 def list_job_sources():
@@ -58,13 +50,20 @@ def list_job_sources():
 
 
 @router.post("/discover/{candidate_id}")
-async def discover_jobs(candidate_id: int, db: Session = Depends(get_db)):
+async def discover_jobs(
+    candidate_id: int,
+    sources: str | None = Query(default=None, description="Comma-separated list of sources to scrape"),
+    remote_type: str | None = Query(default=None, description="Filter: remote, onsite, hybrid"),
+    fresh: bool = Query(default=True, description="Clear previous pool links so counts are live-only for this run"),
+    db: Session = Depends(get_db),
+):
     from app.database.models import Candidate
 
     if not db.get(Candidate, candidate_id):
         raise HTTPException(status_code=404, detail="Candidate not found.")
     try:
-        result = await discover_jobs_for_candidate(db, candidate_id)
+        source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
+        result = await discover_jobs_for_candidate(db, candidate_id, sources=source_list, remote_type=remote_type, fresh=fresh)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

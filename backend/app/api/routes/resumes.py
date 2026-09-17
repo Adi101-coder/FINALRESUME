@@ -65,6 +65,15 @@ async def upload_resume(
         db.add(candidate)
         db.flush()
 
+        # Same person, new upload — keep their platform logins so the page
+        # shows logged-in immediately instead of asking again.
+        try:
+            from app.services.session_store import carry_over_sessions
+
+            carry_over_sessions(db, candidate.id)
+        except Exception as exc:
+            logger.warning("Session carry-over skipped for candidate_id=%s: %s", candidate.id, exc)
+
         resume = Resume(
             candidate_id=candidate.id,
             original_filename=file.filename,
@@ -108,10 +117,13 @@ async def upload_resume(
         embedding_id,
     )
     step_done("STORE_CANDIDATE", candidate_id=candidate.id, resume_id=resume.id)
+    profile_dict = profile.model_dump()
+    if "raw_text" in profile_dict:
+        profile_dict["raw_text"] = profile_dict["raw_text"].encode("utf-8", errors="replace").decode("utf-8")
     return {
         "candidate_id": candidate.id,
         "resume_id": resume.id,
-        "profile": profile.model_dump(),
+        "profile": profile_dict,
     }
 
 

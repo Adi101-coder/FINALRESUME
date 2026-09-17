@@ -35,7 +35,7 @@ def search_linkedin_jobs(page: Page, query: str, location: str, limit: int = 10)
     loc = quote_plus(location or "Remote")
     url = f"https://www.linkedin.com/jobs/search/?keywords={keywords}&location={loc}&f_AL=true"
     logger.info("LinkedIn job search: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(2500)
 
     for _ in range(3):
@@ -53,7 +53,7 @@ def search_indeed_jobs(page: Page, query: str, location: str, limit: int = 10) -
     loc = quote_plus(location or "remote")
     url = f"https://www.indeed.com/jobs?q={q}&l={loc}"
     logger.info("Indeed job search: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(2500)
 
     jobs: list[dict] = []
@@ -80,7 +80,7 @@ def search_ziprecruiter_jobs(page: Page, query: str, location: str, limit: int =
     loc = quote_plus(location or "remote")
     url = f"https://www.ziprecruiter.com/jobs-search?search={q}&location={loc}"
     logger.info("ZipRecruiter job search: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(2500)
 
     jobs: list[dict] = []
@@ -104,7 +104,7 @@ def search_glassdoor_jobs(page: Page, query: str, location: str, limit: int = 10
     loc = quote_plus(location or "remote")
     url = f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={q}&locT=C&locKeyword={loc}"
     logger.info("Glassdoor job search: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
     page.wait_for_timeout(2500)
 
     jobs: list[dict] = []

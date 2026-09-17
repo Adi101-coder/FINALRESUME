@@ -21,6 +21,7 @@ router = APIRouter(prefix="/auto-apply", tags=["auto-apply"])
 class AutoApplyConfigUpdate(BaseModel):
     job_titles: list[str] = Field(default_factory=lambda: ["Software Developer", "Frontend Developer"])
     location: str = "Remote"
+    remote_type: str | None = None
 
 
 @router.get("/{candidate_id}/config")
@@ -45,6 +46,8 @@ def update_config(candidate_id: int, payload: AutoApplyConfigUpdate, db: Session
     config = get_or_create_config(db, candidate_id)
     config.job_titles = [t.strip() for t in payload.job_titles if t.strip()]
     config.location = payload.location.strip() or "Remote"
+    if payload.remote_type is not None:
+        config.remote_type = payload.remote_type.strip()
     db.commit()
     db.refresh(config)
     return config_to_dict(config, candidate_id)
