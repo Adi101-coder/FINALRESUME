@@ -144,12 +144,15 @@ class IndeedScraper(BaseJobScraper):
 
     async def fetch_jobs(self, query: str = "", location: str = "", limit: int = 50) -> list[dict]:
         q = quote_plus(query or "software engineer")
-        loc = quote_plus(location or "remote")
+        # Clean location: strip newlines, extra whitespace
+        clean_location = (location or "remote").replace("\n", " ").replace("\r", " ").strip()
+        clean_location = " ".join(clean_location.split())  # collapse multiple spaces
+        loc = quote_plus(clean_location)
         domain = settings.indeed_domain.strip() or "www.indeed.com"
-        if "india" in (location or "").lower() and domain == "www.indeed.com":
+        if "india" in (clean_location or "").lower() and domain == "www.indeed.com":
             domain = "in.indeed.com"
         url = f"https://{domain}/rss?q={q}&l={loc}"
-        logger.info("Indeed RSS fetch: query=%r location=%r domain=%s", query or "(default)", location or "(default)", domain)
+        logger.info("Indeed RSS fetch: query=%r location=%r domain=%s", query or "(default)", clean_location or "(default)", domain)
 
         cookie_headers = dict(DEFAULT_HEADERS)
         if settings.indeed_session_cookie:
@@ -692,6 +695,13 @@ class RemotiveScraper(BaseJobScraper):
     """Remotive.com — free remote job board API (no auth required)."""
 
     source_name = "remotive"
+    last_total_available: int | None = None
+
+    async def fetch_jobs_with_count(
+        self, query: str = "", location: str = "", limit: int = 50
+    ) -> tuple[list[dict], int | None]:
+        jobs = await self.fetch_jobs(query=query, location=location, limit=limit)
+        return jobs, self.last_total_available
 
     async def fetch_jobs(self, query: str = "", location: str = "", limit: int = 50) -> list[dict]:
         url = "https://remotive.com/api/remote-jobs"
@@ -740,6 +750,13 @@ class RemoteOKScraper(BaseJobScraper):
     """RemoteOK.com — free remote job board API (no auth required)."""
 
     source_name = "remoteok"
+    last_total_available: int | None = None
+
+    async def fetch_jobs_with_count(
+        self, query: str = "", location: str = "", limit: int = 50
+    ) -> tuple[list[dict], int | None]:
+        jobs = await self.fetch_jobs(query=query, location=location, limit=limit)
+        return jobs, self.last_total_available
 
     async def fetch_jobs(self, query: str = "", location: str = "", limit: int = 50) -> list[dict]:
         url = "https://remoteok.com/api"
@@ -791,6 +808,13 @@ class ArbeitnowScraper(BaseJobScraper):
     """Arbeitnow.com — free job board API (no auth required)."""
 
     source_name = "arbeitnow"
+    last_total_available: int | None = None
+
+    async def fetch_jobs_with_count(
+        self, query: str = "", location: str = "", limit: int = 50
+    ) -> tuple[list[dict], int | None]:
+        jobs = await self.fetch_jobs(query=query, location=location, limit=limit)
+        return jobs, self.last_total_available
 
     async def fetch_jobs(self, query: str = "", location: str = "", limit: int = 50) -> list[dict]:
         url = "https://www.arbeitnow.com/api/job-board-api"
@@ -1104,6 +1128,7 @@ class NaukriScraper(BaseJobScraper):
                 headers["gid"] = "LOCATION,INDUSTRY,EDUCATION,FAREA_ROLE"
                 headers["nkparam"] = nkparam
                 headers["x-requested-with"] = "XMLHttpRequest"
+                headers["Content-Type"] = "application/json"
                 if settings.naukri_session_cookie:
                     headers["Cookie"] = settings.naukri_session_cookie
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1112,6 +1137,14 @@ class NaukriScraper(BaseJobScraper):
                         headers=headers,
                         params=api_params,
                     )
+                    if resp.status_code == 406:
+                        # Try with different Accept header
+                        headers["Accept"] = "*/*"
+                        resp = await client.get(
+                            "https://www.naukri.com/jobapi/v3/search",
+                            headers=headers,
+                            params=api_params,
+                        )
                     resp.raise_for_status()
                     data = resp.json()
                 try:

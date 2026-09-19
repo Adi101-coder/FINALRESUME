@@ -56,14 +56,14 @@ async def _fetch_from_scraper(
     queries: list[str],
     location_hint: str,
     query_index: int = 0,
-) -> tuple[list[dict], int | None]:
+) -> tuple[list[dict], int | None, int]:
     """Live search per platform for the candidate's role.
 
     Every selected platform is searched live (no stored pool). Search boards
     use the resume's primary role query server-side so the per-platform total
     is the exact available number for THAT role. Bulk / board sources fetch
     the full feed and are filtered locally against every resume query.
-    Returns (jobs_kept_for_profile, site_total_available).
+    Returns (jobs_kept_for_profile, site_total_available, raw_fetched_count).
     """
     source = scraper.source_name
     if source in BOARD_SOURCES or source in BULK_SOURCES:
@@ -76,7 +76,8 @@ async def _fetch_from_scraper(
             _total = None
         kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER)
         # For bulk feeds the "available for role" is the matched subset.
-        return kept, (len(kept) if _total is None else _total)
+        total = len(kept) if _total is None else _total
+        return kept, total, len(raw or [])
     primary_query = queries[0] if queries else "software engineer"
     if hasattr(scraper, "fetch_jobs_with_count"):
         raw, total = await scraper.fetch_jobs_with_count(
@@ -158,7 +159,11 @@ async def discover_jobs_for_candidate(
 
     profile = CandidateProfile.model_validate(candidate.profile_json)
     queries = build_search_queries(profile.model_dump())
-    location_hint = profile.location or ""
+    # Location often comes back as "Name\nCity" from bad parsing — keep only last line / city part
+    raw_loc = (profile.location or "").replace("\r", "\n")
+    if "\n" in raw_loc:
+        raw_loc = [p.strip() for p in raw_loc.split("\n") if p.strip()][-1]
+    location_hint = " ".join(raw_loc.split())[:80]
 
     step("BUILD_QUERIES", count=len(queries), queries=",".join(queries[:8]))
     scrapers = build_scrapers()

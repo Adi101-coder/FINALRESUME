@@ -1,33 +1,26 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
-import { AutoApplyPanel } from "@/components/landing/AutoApplyPanel";
+import Link from "next/link";
+import { UploadStep } from "@/components/steps/UploadStep";
+import { PlatformStep } from "@/components/steps/PlatformStep";
+import { MatchStep } from "@/components/steps/MatchStep";
+import { AutoApplyStep } from "@/components/steps/AutoApplyStep";
 import { LandingFooter } from "@/components/landing/LandingFooter";
 import { PhoneMockup } from "@/components/landing/PhoneMockup";
-import { WorkflowPanel } from "@/components/landing/WorkflowPanel";
 import {
   checkBackendHealth,
-  discoverJobs,
-  getApplications,
-  getAutoApplyConfig,
   getJobSources,
-  matchJobs,
-  personalizeResume,
-  createApplication,
-  uploadResume,
-  startBot,
-  startBotLogin,
-  signalHumanReady,
-  getBotStatus,
-  API_URL,
   type CandidateProfile,
-  type DiscoveryResult,
   type JobSource,
-  type MatchResult,
 } from "@/lib/api";
 
-const ALL_PLATFORMS = ["linkedin", "indeed", "foundit", "naukri"];
+const STEPS = [
+  { id: "upload", label: "Upload Resume" },
+  { id: "platforms", label: "Select Platforms" },
+  { id: "matches", label: "View Matches" },
+  { id: "apply", label: "Auto-Apply" },
+];
 
 const FEATURES = [
   {
@@ -59,22 +52,16 @@ const FOCUS_BENEFITS = [
 ];
 
 const TRUSTED = ["LinkedIn", "Indeed", "Foundit", "Naukri.com"];
-
 const COMMUNITY = ["AK", "JM", "SR", "PL", "DC", "EV", "TH", "NW"];
 
 export default function HomePage() {
-  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<"upload" | "platforms" | "matches" | "apply">("upload");
   const [candidateId, setCandidateId] = useState<number | null>(null);
   const [profile, setProfile] = useState<CandidateProfile | null>(null);
-  const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
-  const [matches, setMatches] = useState<MatchResult[]>([]);
-  const [appliedIds, setAppliedIds] = useState<Set<number>>(new Set());
   const [jobSources, setJobSources] = useState<JobSource[]>([]);
-  const [pipelineStep, setPipelineStep] = useState(0);
-  const [loadingPhase, setLoadingPhase] = useState<"" | "discover" | "match">("");
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [botRunning, setBotRunning] = useState(false);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([
     "linkedin",
     "indeed",
@@ -82,306 +69,33 @@ export default function HomePage() {
     "naukri",
   ]);
   const [remoteType, setRemoteType] = useState<string>("");
-  const [autoApplyArmed, setAutoApplyArmed] = useState(false);
-  const [sessions, setSessions] = useState<
-    { platform: string; logged_in: boolean; updated_at: string | null }[] | null
-  >(null);
-  const [loginPlatform, setLoginPlatform] = useState<string | null>(null);
-
-  function handlePlatformToggle(platform: string) {
-    setSelectedPlatforms((prev) =>
-      prev.includes(platform) ? prev.filter((p) => p !== platform) : [...prev, platform],
-    );
-  }
-
-  async function refreshApplications(id: number) {
-    try {
-      const apps = await getApplications(id);
-      setAppliedIds(new Set(apps.map((a) => a.job_id)));
-    } catch {
-      /* ignore */
-    }
-  }
-
-  async function refreshSessions(id: number) {
-    try {
-      const cfg = await getAutoApplyConfig(id);
-      setSessions(cfg.sessions ?? null);
-    } catch {
-      /* ignore */
-    }
-  }
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
     void checkBackendHealth()
       .then((ok) => {
-        if (!ok) setError(`Backend health check failed (${API_URL})`);
+        if (!ok) setError(`Backend health check failed`);
       })
-      .catch((err) => {
-        setError(err instanceof Error ? err.message : "Backend unreachable");
-      });
-    void getJobSources()
-      .then((r) => setJobSources(r.sources))
-      .catch((err) => {
-        const msg = err instanceof Error ? err.message : "Failed to load job sources";
-        setError((prev) => prev || msg);
-      });
-  }, []);
-
-  useEffect(() => {
+      .catch(() => setError("Backend unreachable"));
+    void getJobSources().then((r) => setJobSources(r.sources)).catch(() => {});
     const stored = window.localStorage.getItem("candidateId");
     if (stored) {
       const id = Number(stored);
-      setCandidateId(id);
-      void getApplications(id)
-        .then((apps) => setAppliedIds(new Set(apps.map((a) => a.job_id))))
-        .catch(() => {});
-      void refreshSessions(id);
-      void getBotStatus(id)
-        .then((s) => setBotRunning(s.state === "running" || s.state === "stopping"))
-        .catch(() => {});
+      if (!Number.isNaN(id) && id > 0) {
+        setCandidateId(id);
+        setStep("platforms");
+      }
     }
   }, []);
 
-  async function handleUpload(file: File) {
-    setLoading(true);
-    setError("");
-    setMessage("");
-    setMatches([]);
-    setDiscovery(null);
-    try {
-      const result = await uploadResume(file);
-      setCandidateId(result.candidate_id);
-      window.localStorage.setItem("candidateId", String(result.candidate_id));
-      setProfile(result.profile);
-      setSessions(null);
-      void refreshSessions(result.candidate_id);
-      setPipelineStep(1);
-      setMessage(`Resume parsed for ${result.profile.name || "candidate"}. Now log in to platforms in Step 2.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleLogin(platform: string) {
-    if (!candidateId) return;
-    setLoginPlatform(platform);
-    setError("");
-    try {
-      await startBotLogin(candidateId, platform);
-      setMessage(
-        `Opening your Chrome on ${platform} — already-logged-in sessions are picked up automatically. Otherwise log in, then press “Login done”.`,
-      );
-      // Wait for the login run to finish (human logs in + presses Login done).
-      for (let i = 0; i < 100; i += 1) {
-        await new Promise((r) => setTimeout(r, 3000));
-        try {
-          const s = await getBotStatus(candidateId);
-          if (s.state === "idle" || s.state === "error") break;
-        } catch {
-          break;
-        }
-      }
-      await refreshSessions(candidateId);
-      setMessage(`Logged in — searching live jobs for your role…`);
-      await handleDiscoverAndMatch();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Login failed";
-      setError(
-        msg.includes("already running")
-          ? "Another login/apply is already running — wait for it to finish, then log in to the next platform."
-          : msg,
-      );
-    } finally {
-      setLoginPlatform(null);
-    }
-  }
-
-  async function handleLoginDone() {
-    try {
-      await signalHumanReady();
-      setMessage("Session saving — your jobs will appear in a moment…");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Signal failed");
-    }
-  }
-
-  async function handleDiscoverAndMatch() {
-    if (!candidateId) return;
-    setLoading(true);
-    setLoadingPhase("discover");
-    setError("");
-    setMatches([]);
-    setAutoApplyArmed(false);
-    setPipelineStep(2);
-    try {
-      // Fresh live search on every selected platform — no stored/static pool.
-      const disc = await discoverJobs(candidateId, selectedPlatforms, remoteType || undefined, true);
-      setDiscovery(disc);
-      setPipelineStep(3);
-      setLoadingPhase("match");
-      const results = await matchJobs(candidateId);
-      setMatches(results);
-      setPipelineStep(4);
-      const counts = disc.platform_counts ?? {};
-      const perPlatform = selectedPlatforms
-        .map((p) => {
-          const c = counts[p];
-          return `${p}: ${c ? c.available : 0} available`;
-        })
-        .join(" · ");
-      const total = disc.total_available ?? disc.candidate_jobs;
-      const role = disc.role ?? disc.search_queries[0] ?? "this role";
-      setMessage(
-        `${total} live jobs for “${role}” — ${perPlatform} · ${results.length} scored matches below. Arm auto-apply to proceed.`,
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Discovery failed");
-    } finally {
-      setLoading(false);
-      setLoadingPhase("");
-    }
-  }
-
-  async function handlePersonalize(jobId: number) {
-    if (!candidateId) return;
-    setLoading(true);
-    setError("");
-    try {
-      const result = await personalizeResume(candidateId, jobId);
-      setMessage(`Optimized resume ready · ATS ${result.ats_report.overall_score}%`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Personalization failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleApply(match: MatchResult) {
-    if (!candidateId) return;
-    setLoading(true);
-    setError("");
-    try {
-      await createApplication(candidateId, match.job_id, match.score);
-      setAppliedIds((prev) => new Set(prev).add(match.job_id));
-      setMessage(`Tracked application to ${match.title} at ${match.company}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Apply failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleBotApply(match: MatchResult) {
-    if (!candidateId || !match.apply_url) return;
-    if (!autoApplyArmed) {
-      setError("Review the live counts above, then arm auto-apply before the bot runs.");
-      return;
-    }
-    setLoading(true);
-    setError("");
-    try {
-      const u = match.apply_url.toLowerCase();
-      const platform = u.includes("linkedin")
-        ? "linkedin"
-        : u.includes("indeed")
-          ? "indeed"
-          : u.includes("naukri")
-            ? "naukri"
-            : u.includes("foundit") || u.includes("monsterindia")
-              ? "foundit"
-              : u.includes("ziprecruiter")
-                ? "ziprecruiter"
-                : u.includes("glassdoor")
-                  ? "glassdoor"
-                  : "linkedin";
-      await startBot(candidateId, {
-        platform,
-        continuous: false,
-        batchSize: 1,
-        jobUrl: match.apply_url,
-        jobId: match.job_id,
-        jobTitle: match.title,
-        jobCompany: match.company,
-      });
-      setBotRunning(true);
-      setMessage(`Bot applying to ${match.title} at ${match.company}…`);
-      setTimeout(() => {
-        if (candidateId) void refreshApplications(candidateId);
-      }, 8000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Bot apply failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleAutoApplyAll() {
-    if (!candidateId || matches.length === 0) return;
-    if (!autoApplyArmed) {
-      setError("Arm auto-apply first — confirm the exact live counts before bulk apply.");
-      return;
-    }
-    const targets = matches.filter((m) => m.passed_threshold && !appliedIds.has(m.job_id));
-    if (targets.length === 0) {
-      setMessage("No strong unapplied matches left for auto-apply.");
-      return;
-    }
-    setLoading(true);
-    setError("");
-    try {
-      let done = 0;
-      for (const match of targets.slice(0, 10)) {
-        setMessage(`Auto-apply ${done + 1}/${Math.min(targets.length, 10)}: ${match.title}…`);
-        await handleBotApplyTracked(match);
-        done += 1;
-        await new Promise((r) => setTimeout(r, 4000));
-      }
-      setMessage(`Auto-apply batch finished: ${done} jobs processed. Check dashboard for status.`);
-      await refreshApplications(candidateId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Bulk auto-apply failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleBotApplyTracked(match: MatchResult) {
-    if (!candidateId || !match.apply_url) return;
-    const u = match.apply_url.toLowerCase();
-    const platform = u.includes("linkedin")
-      ? "linkedin"
-      : u.includes("indeed")
-        ? "indeed"
-        : u.includes("naukri")
-          ? "naukri"
-          : u.includes("foundit") || u.includes("monsterindia")
-            ? "foundit"
-            : "linkedin";
-    await startBot(candidateId, {
-      platform,
-      continuous: false,
-      batchSize: 1,
-      jobUrl: match.apply_url,
-      jobId: match.job_id,
-      jobTitle: match.title,
-      jobCompany: match.company,
-    });
-    setBotRunning(true);
-    // Wait for this single-job run to finish (poll up to ~90s) before next.
-    for (let i = 0; i < 30; i += 1) {
-      await new Promise((r) => setTimeout(r, 3000));
-      try {
-        const s = await getBotStatus(candidateId);
-        setBotRunning(s.state === "running" || s.state === "stopping");
-        if (s.state === "idle" || s.state === "error") break;
-      } catch {
-        break;
-      }
-    }
-  }
+  const handleUploadComplete = (id: number, candidateProfile: CandidateProfile) => {
+    setCandidateId(id);
+    setProfile(candidateProfile);
+    window.localStorage.setItem("candidateId", String(id));
+    setMessage(`Resume parsed for ${candidateProfile.name || "candidate"}. Now select platforms.`);
+    setStep("platforms");
+    document.getElementById("workspace")?.scrollIntoView({ behavior: "smooth" });
+  };
 
   return (
     <>
@@ -391,8 +105,7 @@ export default function HomePage() {
           <div className="mx-auto max-w-3xl text-center">
             <p className="section-tag">Your search, in perfect rhythm</p>
             <h1 className="mt-5 display-heading">
-              Apply smarter,{" "}
-              <span className="font-serif italic font-normal">not harder.</span>
+              Apply smarter, <span className="font-serif italic font-normal">not harder.</span>
             </h1>
             <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-ink-500">
               ResumeBuild parses your resume, discovers jobs across every major board, scores each
@@ -400,17 +113,15 @@ export default function HomePage() {
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
               <Link href="#workspace" className="btn-dark">
-                Try it for free
-                <span aria-hidden>→</span>
+                Try it for free <span aria-hidden>→</span>
               </Link>
-              {candidateId && (
+              {candidateId ? (
                 <Link href="/dashboard" className="btn-outline">
                   View dashboard
                 </Link>
-              )}
+              ) : null}
             </div>
           </div>
-
           <div className="mt-16 lg:mt-20">
             <PhoneMockup />
           </div>
@@ -499,8 +210,7 @@ export default function HomePage() {
               Upload your resume and get scored matches in under a minute.
             </p>
             <Link href="#workspace" className="btn-dark mt-8 bg-white text-ink hover:bg-ink-100">
-              Get started free
-              <span aria-hidden>→</span>
+              Get started free <span aria-hidden>→</span>
             </Link>
           </div>
         </div>
@@ -512,10 +222,7 @@ export default function HomePage() {
           <p className="section-tag">Trusted by teams at</p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-x-12 gap-y-6">
             {TRUSTED.map((name) => (
-              <span
-                key={name}
-                className="text-lg font-semibold tracking-wide text-ink-300 md:text-xl"
-              >
+              <span key={name} className="text-lg font-semibold tracking-wide text-ink-300 md:text-xl">
                 {name}
               </span>
             ))}
@@ -594,48 +301,89 @@ export default function HomePage() {
         </section>
       )}
 
-      {/* Interactive workflow */}
-      <WorkflowPanel
-        loading={loading}
-        loadingPhase={loadingPhase}
-        candidateId={candidateId}
-        profile={profile}
-        discovery={discovery}
-        matches={matches}
-        appliedIds={appliedIds}
-        pipelineStep={pipelineStep}
-        message={message}
-        error={error}
-        selectedPlatforms={selectedPlatforms}
-        remoteType={remoteType}
-        sessions={sessions}
-        loginPlatform={loginPlatform}
-        onUpload={(file) => void handleUpload(file)}
-        onLogin={(p) => void handleLogin(p)}
-        onLoginDone={() => void handleLoginDone()}
-        onDiscoverAndMatch={() => void handleDiscoverAndMatch()}
-        onPersonalize={(jobId) => void handlePersonalize(jobId)}
-        onApply={(match) => void handleApply(match)}
-        onBotApply={(match) => void handleBotApply(match)}
-        onAutoApplyAll={() => void handleAutoApplyAll()}
-        autoApplyArmed={autoApplyArmed}
-        onAutoApplyArmedChange={setAutoApplyArmed}
-        onPlatformToggle={handlePlatformToggle}
-        onRemoteTypeChange={setRemoteType}
-        botRunning={botRunning}
-        onError={setError}
-      />
+      {/* Workspace — job search flow */}
+      <section id="workspace" className="scroll-mt-24 bg-ink-50 py-24">
+        <div className="mx-auto max-w-5xl px-6 lg:px-10">
+          <div className="mx-auto max-w-2xl text-center">
+            <p className="section-tag">Start now</p>
+            <h2 className="mt-4 display-heading">
+              Upload once. <span className="font-serif italic font-normal">Match everywhere.</span>
+            </h2>
+            <p className="mt-4 text-lg text-ink-500">
+              Drop your PDF, pick platforms, log in only where needed, and review scored matches.
+            </p>
+          </div>
 
-      <AutoApplyPanel
-        candidateId={candidateId}
-        onApplicationsChanged={() => {
-          if (!candidateId) return;
-          void refreshApplications(candidateId);
-          void getBotStatus(candidateId).then((s) =>
-            setBotRunning(s.state === "running" || s.state === "stopping"),
-          );
-        }}
-      />
+          <div className="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {STEPS.map((s, i) => (
+              <div
+                key={s.id}
+                className={`progress-step ${
+                  ["upload", "platforms", "matches", "apply"].indexOf(step) > i
+                    ? "progress-step-done"
+                    : ["upload", "platforms", "matches", "apply"].indexOf(step) === i
+                      ? "progress-step-active"
+                      : ""
+                }`}
+              >
+                <span className="font-mono text-xs opacity-60">{String(i + 1).padStart(2, "0")}</span>
+                <span>{s.label}</span>
+              </div>
+            ))}
+          </div>
+
+          {message && <div className="alert-success mt-6">{message}</div>}
+          {error && <div className="alert-error mt-6">{error}</div>}
+
+          <div className="mt-10 card-light p-6 md:p-8">
+            {step === "upload" && (
+              <UploadStep
+                onComplete={handleUploadComplete}
+                loading={loading}
+                error={error}
+                onError={setError}
+              />
+            )}
+
+            {step === "platforms" && candidateId && (
+              <PlatformStep
+                candidateId={candidateId}
+                profile={profile}
+                jobSources={jobSources}
+                selectedPlatforms={selectedPlatforms}
+                onSelectedChange={setSelectedPlatforms}
+                remoteType={remoteType}
+                onRemoteTypeChange={setRemoteType}
+                onComplete={() => setStep("matches")}
+                loading={loading}
+                error={error}
+                onError={setError}
+                onMessage={setMessage}
+              />
+            )}
+
+            {step === "matches" && candidateId && (
+              <MatchStep
+                candidateId={candidateId}
+                profile={profile}
+                onComplete={() => setStep("apply")}
+                loading={loading}
+                error={error}
+                onError={setError}
+                onMessage={setMessage}
+                selectedPlatforms={selectedPlatforms}
+                onSelectedChange={setSelectedPlatforms}
+                remoteType={remoteType}
+                onRemoteTypeChange={setRemoteType}
+              />
+            )}
+
+            {step === "apply" && candidateId && (
+              <AutoApplyStep candidateId={candidateId} loading={loading} error={error} />
+            )}
+          </div>
+        </div>
+      </section>
 
       <LandingFooter />
     </>

@@ -64,10 +64,17 @@ uvicorn app.main:app --reload --app-dir .
 
 API docs: http://localhost:8000/docs
 
+<<<<<<< HEAD
 Live discovery (no static pool — every run searches selected platforms fresh):
 
 ```bash
 curl -X POST "http://localhost:8000/api/jobs/discover/1?sources=linkedin,indeed,foundit,naukri&fresh=true"
+=======
+Seed sample jobs:
+
+```bash
+python scripts/seed_jobs.py
+>>>>>>> ed6bf24 (Initial commit)
 ```
 
 ### 3. Frontend
@@ -130,6 +137,9 @@ storage/
 - Resume optimizer **never invents** experience — it only reorders and rewrites existing content.
 - Duplicate jobs are blocked via SHA-256 hash of company + title + location.
 - Respect site Terms of Service; prefer official APIs over browser automation.
+<<<<<<< HEAD
 
 
 okh first listen to me i give you api of which you wnat first remove job pool or stored static data i wnat you to search every selected platform for job and then tell me exect number of avalible jobs for that role and auto apply after that
+=======
+>>>>>>> ed6bf24 (Initial commit)

@@ -363,26 +363,28 @@ export function WorkflowPanel({
                       const session = sessions?.find((s) => s.platform === p.key);
                       const isLoggedIn = session?.logged_in;
                       const needsLogin = p.needsLoginForSearch && !isLoggedIn;
+                      const isSelected = selectedPlatforms.includes(p.key);
                       return (
                         <button
                           key={p.key}
                           type="button"
                           onClick={() => {
-                            if (needsLogin) {
+                            // Always allow toggle, but show login prompt if needed
+                            if (needsLogin && !isSelected) {
                               onLogin(p.key);
                             } else {
                               onPlatformToggle?.(p.key);
                             }
                           }}
                           className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
-                            selectedPlatforms.includes(p.key)
+                            isSelected
                               ? "border-ink bg-ink text-white"
                               : needsLogin
                               ? "border-amber-300 bg-amber-50 text-amber-800 hover:border-amber-400"
                               : "border-ink-200 bg-white text-ink-600 hover:border-ink-400"
                           }`}
                           title={
-                            needsLogin
+                            needsLogin && !isSelected
                               ? "Click to log in first"
                               : p.auth === "login recommended"
                               ? isLoggedIn
@@ -393,7 +395,7 @@ export function WorkflowPanel({
                         >
                           {p.label}
                           {isLoggedIn && " ✓"}
-                          {needsLogin && " 🔒"}
+                          {needsLogin && !isSelected && " 🔒"}
                           {p.auth === "login recommended" && !isLoggedIn && !needsLogin && " ⚡"}
                         </button>
                       );
