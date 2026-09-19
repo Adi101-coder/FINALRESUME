@@ -45,6 +45,7 @@ type Props = {
   onSelectedChange: (p: string[]) => void;
   remoteType: string;
   onRemoteTypeChange: (t: string) => void;
+  onAddToQueue: (match: MatchResult) => void;
 };
 
 export function MatchStep({
@@ -60,6 +61,7 @@ export function MatchStep({
   onSelectedChange,
   remoteType,
   onRemoteTypeChange,
+  onAddToQueue,
 }: Props) {
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [matches, setMatches] = useState<MatchResult[]>([]);
@@ -288,12 +290,12 @@ export function MatchStep({
 
       {filteredMatches.length === 0 && matches.length > 0 ? (
         <div className="text-center py-12 text-ink-500">
-          No matches above {threshold}%. Lower the threshold to see more.
+          No matches above {threshold}{'%'}. Lower the threshold to see more.
         </div>
       ) : (
         <div className="space-y-4">
           {filteredMatches.map((match) => (
-            <MatchCard key={match.job_id} match={match} profile={profile} />
+            <MatchCard key={match.job_id} match={match} profile={profile} onAddToQueue={onAddToQueue} />
           ))}
         </div>
       )}
@@ -312,7 +314,7 @@ export function MatchStep({
   );
 }
 
-function MatchCard({ match, profile }: { match: MatchResult; profile: any }) {
+function MatchCard({ match, profile, onAddToQueue }: { match: MatchResult; profile: any; onAddToQueue: (match: MatchResult) => void }) {
   const [expanded, setExpanded] = useState(false);
   const scoreBreakdown = [
     { label: "Skills", score: match.skills_score, color: "bg-green-500" },
@@ -338,6 +340,7 @@ function MatchCard({ match, profile }: { match: MatchResult; profile: any }) {
             {expanded ? "Hide" : "Score ↓"}
           </button>
           <a href={match.apply_url} target="_blank" rel="noreferrer" className="btn-outline text-sm">View ↗</a>
+          <button onClick={() => onAddToQueue(match)} className="btn-dark text-sm">+ Queue</button>
         </div>
       </div>
       {expanded && (

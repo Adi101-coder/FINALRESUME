@@ -13,6 +13,7 @@ import {
   getJobSources,
   type CandidateProfile,
   type JobSource,
+  type MatchResult,
 } from "@/lib/api";
 
 const STEPS = [
@@ -69,8 +70,24 @@ export default function HomePage() {
     "naukri",
   ]);
   const [remoteType, setRemoteType] = useState<string>("");
+  const [reviewQueue, setReviewQueue] = useState<MatchResult[]>([]);
 
   const [storedId, setStoredId] = useState<number | null>(null);
+
+  const handleAddToQueue = (match: MatchResult) => {
+    setReviewQueue((prev) => {
+      if (prev.some((m) => m.job_id === match.job_id)) return prev;
+      return [...prev, match];
+    });
+  };
+
+  const handleRemoveFromQueue = (jobId: number) => {
+    setReviewQueue((prev) => prev.filter((m) => m.job_id !== jobId));
+  };
+
+  const handleClearQueue = () => {
+    setReviewQueue([]);
+  };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -445,6 +462,7 @@ export default function HomePage() {
                 onSelectedChange={setSelectedPlatforms}
                 remoteType={remoteType}
                 onRemoteTypeChange={setRemoteType}
+                onAddToQueue={handleAddToQueue}
               />
             )}
 
@@ -454,6 +472,9 @@ export default function HomePage() {
                 loading={loading}
                 error={error}
                 onBack={() => setStep("matches")}
+                reviewQueue={reviewQueue}
+                onRemoveFromQueue={handleRemoveFromQueue}
+                onClearQueue={handleClearQueue}
               />
             )}
           </div>

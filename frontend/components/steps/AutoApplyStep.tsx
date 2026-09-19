@@ -17,12 +17,14 @@ type Props = {
   loading: boolean;
   error: string;
   onBack: () => void;
+  reviewQueue: MatchResult[];
+  onRemoveFromQueue: (jobId: number) => void;
+  onClearQueue: () => void;
 };
 
-export function AutoApplyStep({ candidateId, loading, error, onBack }: Props) {
+export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue, onRemoveFromQueue, onClearQueue }: Props) {
   const [config, setConfig] = useState<AutoApplyConfig | null>(null);
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
-  const [reviewQueue, setReviewQueue] = useState<MatchResult[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [botRunning, setBotRunning] = useState(false);
 
@@ -66,19 +68,21 @@ export function AutoApplyStep({ candidateId, loading, error, onBack }: Props) {
   };
 
   const approveCurrent = () => {
-    setReviewQueue((prev) => prev.filter((_, i) => i !== currentIndex));
+    const match = reviewQueue[currentIndex];
+    if (match) onRemoveFromQueue(match.job_id);
     setCurrentIndex((prev) => Math.min(prev, Math.max(0, reviewQueue.length - 2)));
   };
 
   const rejectCurrent = () => {
-    setReviewQueue((prev) => prev.filter((_, i) => i !== currentIndex));
+    const match = reviewQueue[currentIndex];
+    if (match) onRemoveFromQueue(match.job_id);
     setCurrentIndex((prev) => Math.min(prev, Math.max(0, reviewQueue.length - 2)));
   };
 
   const approveAll = () => {
     // Send all to bot
     handleStartBot();
-    setReviewQueue([]);
+    onClearQueue();
   };
 
   return (
@@ -171,7 +175,7 @@ export function AutoApplyStep({ candidateId, loading, error, onBack }: Props) {
             <button onClick={approveAll} className="btn-dark flex-1">
               Approve All & Start Bot
             </button>
-            <button onClick={() => setReviewQueue([])} className="btn-outline flex-1">
+            <button onClick={onClearQueue} className="btn-outline flex-1">
               Clear Queue
             </button>
           </div>
