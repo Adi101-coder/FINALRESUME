@@ -70,6 +70,8 @@ export default function HomePage() {
   ]);
   const [remoteType, setRemoteType] = useState<string>("");
 
+  const [storedId, setStoredId] = useState<number | null>(null);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     void checkBackendHealth()
@@ -78,12 +80,13 @@ export default function HomePage() {
       })
       .catch(() => setError("Backend unreachable"));
     void getJobSources().then((r) => setJobSources(r.sources)).catch(() => {});
+    // Never auto-skip the upload step — just remember the previous profile
+    // so the user can continue or start fresh.
     const stored = window.localStorage.getItem("candidateId");
     if (stored) {
       const id = Number(stored);
       if (!Number.isNaN(id) && id > 0) {
-        setCandidateId(id);
-        setStep("platforms");
+        setStoredId(id);
       }
     }
   }, []);
@@ -92,8 +95,29 @@ export default function HomePage() {
     setCandidateId(id);
     setProfile(candidateProfile);
     window.localStorage.setItem("candidateId", String(id));
+    setStoredId(id);
     setMessage(`Resume parsed for ${candidateProfile.name || "candidate"}. Now select platforms.`);
     setStep("platforms");
+    document.getElementById("workspace")?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const handleContinueStored = () => {
+    if (storedId) {
+      setCandidateId(storedId);
+      setMessage(`Continuing with saved profile #${storedId}.`);
+      setStep("platforms");
+      document.getElementById("workspace")?.scrollIntoView({ behavior: "smooth" });
+    }
+  };
+
+  const handleStartFresh = () => {
+    window.localStorage.removeItem("candidateId");
+    setStoredId(null);
+    setCandidateId(null);
+    setProfile(null);
+    setMessage("");
+    setError("");
+    setStep("upload");
     document.getElementById("workspace")?.scrollIntoView({ behavior: "smooth" });
   };
 
@@ -335,7 +359,31 @@ export default function HomePage() {
           {message && <div className="alert-success mt-6">{message}</div>}
           {error && <div className="alert-error mt-6">{error}</div>}
 
-          <div className="mt-10 card-light p-6 md:p-8">
+          {!candidateId && storedId && step === "upload" && (
+            <div className="mt-6 rounded-2xl border border-ink-200 bg-white p-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-ink-600">
+                Found a previous upload (profile #{storedId}). Continue where you left off, or start fresh.
+              </p>
+              <div className="flex gap-2">
+                <button onClick={handleContinueStored} className="btn-dark text-sm">
+                  Continue #{storedId} →
+                </button>
+                <button onClick={handleStartFresh} className="btn-outline text-sm">
+                  Upload new resume
+                </button>
+              </div>
+            </div>
+          )}
+
+          {candidateId && (
+            <div className="mt-6 flex justify-end">
+              <button onClick={handleStartFresh} className="btn-outline text-xs">
+                ↺ Upload new resume (start over)
+              </button>
+            </div>
+          )}
+
+          <div className="mt-6 card-light p-6 md:p-8">
             {step === "upload" && (
               <UploadStep
                 onComplete={handleUploadComplete}

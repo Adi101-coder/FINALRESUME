@@ -6,6 +6,7 @@ import {
   matchJobs,
   startBotLogin,
   getAutoApplyConfig,
+  getBotStatus,
   signalHumanReady,
   type DiscoveryResult,
   type MatchResult,
@@ -84,16 +85,36 @@ export function MatchStep({
     onSelectedChange(next);
   };
 
+  const [loginBusy, setLoginBusy] = useState(false);
+
   const handleLogin = async (platform: string) => {
     setLoginPlatform(platform);
+    setLoginBusy(true);
     setInfo("");
     onError("");
     try {
       await startBotLogin(candidateId, platform);
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+          const s = await getBotStatus(candidateId);
+          if (s.state === "error") {
+            onError(s.error || `${platform} login failed on server. Free boards work without login.`);
+            setLoginPlatform(null);
+            setLoginBusy(false);
+            return;
+          }
+          if ((s.recent_events || []).length > 0) break;
+        } catch {
+          break;
+        }
+      }
       setInfo(`Browser opened for ${platform}. Finish sign-in there, then press "Login done". You stay on this page.`);
     } catch (err) {
       onError(err instanceof Error ? err.message : "Login failed");
       setLoginPlatform(null);
+    } finally {
+      setLoginBusy(false);
     }
   };
 
@@ -183,10 +204,10 @@ export function MatchStep({
                   <button
                     type="button"
                     onClick={() => handleLogin(p.key)}
-                    disabled={loginPlatform !== null}
-                    className="rounded-xl border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800"
+                    disabled={loginBusy}
+                    className="rounded-xl border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-50"
                   >
-                    {loginPlatform === p.key ? "…" : "Log in"}
+                    {loginPlatform === p.key && loginBusy ? "Opening…" : "Log in"}
                   </button>
                 )}
               </div>

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   startBotLogin,
   getAutoApplyConfig,
+  getBotStatus,
   signalHumanReady,
 } from "@/lib/api";
 
@@ -79,18 +80,39 @@ export function PlatformStep({
   const selectAll = () => onSelectedChange(PLATFORMS.map((p) => p.key));
   const clearAll = () => onSelectedChange([]);
 
+  const [loginBusy, setLoginBusy] = useState(false);
+
   const handleLogin = async (platform: string) => {
     setLoginPlatform(platform);
+    setLoginBusy(true);
     setInfo("");
     onError("");
     try {
       await startBotLogin(candidateId, platform);
+      // Poll bot status so backend failures (e.g. no display on hosted server) surface immediately
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+          const s = await getBotStatus(candidateId);
+          if (s.state === "error") {
+            onError(s.error || `${platform} login failed on server. Free boards work without login.`);
+            setLoginPlatform(null);
+            setLoginBusy(false);
+            return;
+          }
+          if ((s.recent_events || []).length > 0) break;
+        } catch {
+          break;
+        }
+      }
       setInfo(
-        `Browser opened for ${platform}. Complete sign-in (Google OAuth if shown), then press "Login done".`,
+        `Browser opened for ${platform}. Complete sign-in (Google OAuth if shown), then press "Login done". You stay on this page.`,
       );
     } catch (err) {
       onError(err instanceof Error ? err.message : "Login failed");
       setLoginPlatform(null);
+    } finally {
+      setLoginBusy(false);
     }
   };
 
@@ -154,10 +176,10 @@ export function PlatformStep({
                   <button
                     type="button"
                     onClick={() => handleLogin(p.key)}
-                    disabled={loginPlatform !== null}
-                    className="rounded-xl border border-amber-300 bg-amber-50 px-2 py-2 text-xs font-semibold text-amber-800 hover:border-amber-400"
+                    disabled={loginBusy}
+                    className="rounded-xl border border-amber-300 bg-amber-50 px-2 py-2 text-xs font-semibold text-amber-800 hover:border-amber-400 disabled:opacity-50"
                   >
-                    {loginPlatform === p.key ? "…" : "Log in"}
+                    {loginPlatform === p.key && loginBusy ? "Opening…" : loginPlatform === p.key ? "Log in" : "Log in"}
                   </button>
                 )}
               </div>
@@ -185,6 +207,12 @@ export function PlatformStep({
           ))}
         </div>
       </div>
+
+      <p className="mb-6 text-xs text-ink-400">
+        Note: interactive browser login opens on the machine running the backend. On the hosted
+        demo it may fail — free boards (Remotive, RemoteOK, Arbeitnow, Greenhouse, ZipRecruiter)
+        search without any login.
+      </p>
 
       {loginPlatform && (
         <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-800">
