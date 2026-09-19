@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import Callable
@@ -54,45 +55,155 @@ def system_chrome_user_data_dir() -> Path | None:
     return path if path.exists() else None
 
 
+def system_safari_user_data_dir() -> Path | None:
+    """User's Safari profile dir on macOS (if available via Playwright)."""
+    import sys
+
+    if sys.platform != "darwin":
+        return None
+    home = Path.home()
+    # Safari doesn't have a traditional profile dir like Chrome
+    # Playwright uses a different approach for Safari
+    path = home / "Library" / "Safari"
+    return path if path.exists() else None
+
+
+def system_firefox_user_data_dir() -> Path | None:
+    """User's Firefox profile dir."""
+    import os
+    import sys
+
+    override = os.environ.get("FIREFOX_USER_DATA_DIR", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        return path if path.exists() else None
+    home = Path.home()
+    if sys.platform == "darwin":
+        path = home / "Library" / "Application Support" / "Firefox"
+    elif sys.platform == "win32":
+        local = os.environ.get("APPDATA", "")
+        path = Path(local) / "Mozilla" / "Firefox" if local else home
+    else:
+        path = home / ".mozilla" / "firefox"
+    return path if path.exists() else None
+
+
+def get_available_browser_contexts(pw) -> list[tuple[str, callable]]:
+    """Get list of available browser contexts to try in order of preference."""
+    contexts = []
+
+    # 1. Try user's Chrome profile
+    chrome_dir = system_chrome_user_data_dir()
+    if chrome_dir:
+        def chrome_context(vp=None):
+            import os
+            profile = os.environ.get("CHROME_PROFILE", "Default").strip() or "Default"
+            return pw.chromium.launch_persistent_context(
+                str(chrome_dir),
+                channel="chrome",
+                headless=False,
+                slow_mo=80,
+                viewport=vp or {"width": 1400, "height": 900},
+                ignore_default_args=["--enable-automation"],
+                args=[f"--profile-directory={profile}", "--disable-blink-features=AutomationControlled"],
+            )
+        contexts.append(("Chrome (your profile)", chrome_context))
+
+    # 2. Try Chrome without persistent context (fresh)
+    def chrome_fresh(vp=None):
+        return pw.chromium.launch(
+            headless=False,
+            slow_mo=80,
+            ignore_default_args=["--enable-automation"],
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+    contexts.append(("Chrome (fresh)", lambda vp: chrome_fresh(vp).new_context(viewport=vp or {"width": 1400, "height": 900})))
+
+    # 3. Try Firefox if available
+    firefox_dir = system_firefox_user_data_dir()
+    if firefox_dir:
+        def firefox_context(vp=None):
+            import os
+            # Firefox profile selection is more complex, use first available
+            profiles_ini = firefox_dir / "profiles.ini"
+            profile_dir = firefox_dir
+            if profiles_ini.exists():
+                # Parse profiles.ini to find default profile
+                import configparser
+                config = configparser.ConfigParser()
+                config.read(profiles_ini)
+                for section in config.sections():
+                    if config[section].get("Default") == "1":
+                        profile_dir = firefox_dir / config[section].get("Path", "")
+                        break
+            return pw.firefox.launch_persistent_context(
+                str(profile_dir),
+                headless=False,
+                slow_mo=80,
+                viewport=vp or {"width": 1400, "height": 900},
+            )
+        contexts.append(("Firefox (your profile)", firefox_context))
+
+    # 4. Try Safari on macOS (Playwright support is limited)
+    if sys.platform == "darwin":
+        try:
+            def safari_context(vp=None):
+                return pw.webkit.launch(
+                    headless=False,
+                    slow_mo=80,
+                    viewport=vp or {"width": 1400, "height": 900},
+                )
+            contexts.append(("Safari (WebKit)", lambda vp: safari_context(vp).new_context(viewport=vp or {"width": 1400, "height": 900})))
+        except Exception:
+            pass
+
+    return contexts
+
+
 def open_system_chrome_context(pw, *, viewport: dict | None = None):
-    """Open the user's own Chrome (persistent profile) via Playwright.
+    """Open the user's own browser (persistent profile) via Playwright.
 
     This reuses the browser where the user is already logged in — no fresh
-    bot browser, no logging in again. Requires Google Chrome installed.
+    bot browser, no logging in again. Tries Chrome, Firefox, Safari in order.
     Raises RuntimeError with a human-readable reason when unusable.
     """
     import os
 
-    user_data_dir = system_chrome_user_data_dir()
-    if user_data_dir is None:
+    # Try to get available browser contexts
+    available_contexts = get_available_browser_contexts(pw)
+
+    if not available_contexts:
         raise RuntimeError(
-            "Google Chrome not found on this machine. Install Chrome or log in "
-            "via the fallback browser window."
+            "No supported browser found. Install Chrome, Firefox, or Safari "
+            "and make sure you have a profile with your logins."
         )
-    profile = os.environ.get("CHROME_PROFILE", "Default").strip() or "Default"
-    try:
-        context = pw.chromium.launch_persistent_context(
-            str(user_data_dir),
-            channel="chrome",
-            headless=False,
-            slow_mo=80,
-            viewport=viewport or {"width": 1400, "height": 900},
-            # Hide automation so "Sign in with Google" isn't rejected as insecure.
-            ignore_default_args=["--enable-automation"],
-            args=[
-                f"--profile-directory={profile}",
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
-        return context
-    except Exception as exc:
-        msg = str(exc)
+
+    last_error = None
+    for name, context_factory in available_contexts:
+        try:
+            logger.info(f"Trying to open {name}...")
+            context = context_factory(viewport)
+            logger.info(f"Successfully opened {name}")
+            return context
+        except Exception as exc:
+            last_error = exc
+            msg = str(exc).lower()
+            if "profile" in msg or "in use" in msg or "lock" in msg:
+                logger.warning(f"{name} profile locked: {exc}")
+                continue
+            logger.warning(f"{name} failed: {exc}")
+            continue
+
+    # If we get here, all browsers failed
+    if last_error:
+        msg = str(last_error)
         if "profile" in msg.lower() or "in use" in msg.lower() or "lock" in msg.lower():
             raise RuntimeError(
-                "Your Chrome is open and locking its profile. Close Chrome completely, "
+                "Your browser is open and locking its profile. Close all browser windows completely, "
                 "then click Log in again — it will reuse your logged-in sessions."
-            ) from exc
-        raise RuntimeError(f"Could not open your Chrome profile ({msg}).") from exc
+            ) from last_error
+        raise RuntimeError(f"Could not open any browser profile ({msg}).") from last_error
+    raise RuntimeError("No supported browser found. Install Chrome, Firefox, or Safari.")
 
 
 class AutoApplyRunner:
@@ -241,6 +352,7 @@ class AutoApplyRunner:
         report_path: Path | None = None,
         debug: bool = False,
         stop_check: Callable[[], bool] | None = None,
+        max_jobs: int | None = None,
     ) -> list[dict]:
         assert self._browser is not None
         context = self._new_context("linkedin")
@@ -256,12 +368,16 @@ class AutoApplyRunner:
             while True:
                 if stop_check and stop_check():
                     break
+                if max_jobs is not None and len(all_results) >= max_jobs:
+                    break
                 round_num += 1
                 if max_rounds is not None and round_num > max_rounds:
                     break
 
                 for title in job_titles:
                     if stop_check and stop_check():
+                        break
+                    if max_jobs is not None and len(all_results) >= max_jobs:
                         break
                     batch = apply_linkedin_from_search(
                         page,
@@ -315,6 +431,7 @@ class AutoApplyRunner:
         delay_sec: float = 4.0,
         max_rounds: int | None = None,
         stop_check: Callable[[], bool] | None = None,
+        max_jobs: int | None = None,
     ) -> list[dict]:
         config = BOARD_CONFIGS.get(platform)
         if not config:
@@ -332,12 +449,16 @@ class AutoApplyRunner:
             while True:
                 if stop_check and stop_check():
                     break
+                if max_jobs is not None and len(all_results) >= max_jobs:
+                    break
                 round_num += 1
                 if max_rounds is not None and round_num > max_rounds:
                     break
 
                 for title in job_titles:
                     if stop_check and stop_check():
+                        break
+                    if max_jobs is not None and len(all_results) >= max_jobs:
                         break
                     batch = board_apply_from_search(
                         page,
@@ -384,6 +505,7 @@ class AutoApplyRunner:
         *,
         limit_per_title: int = 3,
         delay_sec: float = 4.0,
+        max_jobs: int | None = None,
     ) -> list[dict]:
         if platform == "linkedin":
             return self.linkedin_run_until_stop(
@@ -394,6 +516,7 @@ class AutoApplyRunner:
                 batch_size=limit_per_title,
                 delay_sec=delay_sec,
                 max_rounds=1,
+                max_jobs=max_jobs,
             )
         if platform in BOARD_CONFIGS:
             return self.platform_run_until_stop(
@@ -405,6 +528,7 @@ class AutoApplyRunner:
                 batch_size=limit_per_title,
                 delay_sec=delay_sec,
                 max_rounds=1,
+                max_jobs=max_jobs,
             )
 
         assert self._browser is not None

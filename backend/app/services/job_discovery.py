@@ -94,7 +94,8 @@ async def _fetch_from_scraper(
     kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER)
     if total is None:
         total = len(kept)
-    return kept, total
+    # Return both kept and raw count for accurate platform stats
+    return kept, total, len(raw)
 
 
 async def _scrape_one(
@@ -102,7 +103,7 @@ async def _scrape_one(
     queries: list[str],
     location_hint: str,
     query_index: int,
-) -> tuple[str, list[dict], int | None, str | None]:
+) -> tuple[str, list[dict], int | None, int, str | None]:
     source = scraper.source_name
     label = (
         getattr(scraper, "company_label", None)
@@ -112,26 +113,26 @@ async def _scrape_one(
     )
     step(f"SCRAPE_{source.upper()}", target=label)
     try:
-        batch, total = await asyncio.wait_for(
+        batch, total, raw_count = await asyncio.wait_for(
             _fetch_from_scraper(scraper, queries, location_hint, query_index),
             timeout=SCRAPER_TIMEOUT_SEC,
         )
         scraper_error = getattr(scraper, "last_error", None)
         if not batch and scraper_error:
             step_fail(f"SCRAPE_{source.upper()}", scraper_error)
-            return source, [], total, scraper_error
-        step_done(f"SCRAPE_{source.upper()}", target=label, jobs=len(batch), available=total)
-        return source, batch, total, None
+            return source, [], total, raw_count, scraper_error
+        step_done(f"SCRAPE_{source.upper()}", target=label, jobs=len(batch), available=total, fetched_raw=raw_count)
+        return source, batch, total, raw_count, None
     except asyncio.TimeoutError:
         msg = f"timed out after {SCRAPER_TIMEOUT_SEC}s"
         step_fail(f"SCRAPE_{source.upper()}", msg)
         logger.warning("Source %s (%s) timed out", source, label)
-        return source, [], None, msg
+        return source, [], None, 0, msg
     except Exception as exc:
         msg = str(exc) or repr(exc)
         step_fail(f"SCRAPE_{source.upper()}", msg)
         logger.exception("Source %s (%s) failed", source, label)
-        return source, [], None, msg
+        return source, [], None, 0, msg
 
 
 async def discover_jobs_for_candidate(
@@ -187,7 +188,7 @@ async def discover_jobs_for_candidate(
     source_stats: dict[str, dict] = {}
     platform_counts: dict[str, dict] = {}
 
-    for source, batch, site_total, error in results:
+    for source, batch, site_total, raw_count, error in results:
         stats = source_stats.setdefault(source, {"fetched": 0, "errors": 0})
         stats["fetched"] += len(batch)
         if error:
@@ -212,8 +213,20 @@ async def discover_jobs_for_candidate(
             entry["error"] = error
 
     if fresh:
-        # Remove stale pool links so counts = this live run only.
-        db.query(CandidateJob).filter(CandidateJob.candidate_id == candidate_id).delete()
+        # Remove stale pool links for the selected sources only so counts = this live run only.
+        # Jobs from other sources not searched this time are preserved.
+        if sources:
+            source_job_ids = (
+                db.query(Job.id)
+                .filter(Job.source.in_(sources))
+                .subquery()
+            )
+            db.query(CandidateJob).filter(
+                CandidateJob.candidate_id == candidate_id,
+                CandidateJob.job_id.in_(source_job_ids),
+            ).delete(synchronize_session=False)
+        else:
+            db.query(CandidateJob).filter(CandidateJob.candidate_id == candidate_id).delete()
         db.flush()
 
     step("DEDUPLICATE_AND_STORE", raw_jobs=len(scraped))

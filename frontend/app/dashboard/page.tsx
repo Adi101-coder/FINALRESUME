@@ -6,9 +6,11 @@ import { StatCard } from "@/components/StatCard";
 import {
   getAnalytics,
   getApplications,
+  getBotStatus,
   logClick,
   updateApplicationStatus,
   type Application,
+  type BotStatus,
 } from "@/lib/api";
 
 const STATUS_OPTIONS = ["applied", "interview", "offer", "rejected", "pending"];
@@ -33,6 +35,8 @@ export default function DashboardPage() {
   const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
+  const [botPolling, setBotPolling] = useState(false);
 
   const load = useCallback(async (id: number) => {
     setLoading(true);
@@ -55,6 +59,25 @@ export default function DashboardPage() {
       void load(Number(stored));
     }
   }, [load]);
+
+  useEffect(() => {
+    if (!candidateId || botPolling) return;
+    const id = Number(candidateId);
+    const timer = setInterval(async () => {
+      try {
+        const status = await getBotStatus(id);
+        setBotStatus(status);
+        if (status.state === "idle" || status.state === "error") {
+          setBotPolling(false);
+          await load(id);
+        }
+      } catch {
+        setBotPolling(false);
+      }
+    }, 3000);
+    setBotPolling(true);
+    return () => clearInterval(timer);
+  }, [candidateId, botPolling]);
 
   async function handleLoad() {
     const id = Number(candidateId);
@@ -114,6 +137,35 @@ export default function DashboardPage() {
           <StatCard label="Interview rate" value={`${analytics.interview_rate}%`} />
           <StatCard label="Avg match score" value={analytics.average_ats_score ?? "—"} />
           <StatCard label="In interview" value={analytics.status_breakdown.interview ?? 0} />
+        </section>
+      )}
+
+      {botStatus && botStatus.state !== "idle" && (
+        <section className="card-light">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="section-tag">Auto-apply bot</p>
+              <h3 className="mt-2 text-xl font-semibold text-ink">Bot running on {botStatus.platform}</h3>
+            </div>
+            <span className={`badge-neutral ${botStatus.state === "running" ? "bg-ink text-white" : "bg-amber-100 text-amber-800"}`}>
+              {botStatus.state}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-4">
+            <StatCard label="Submitted" value={botStatus.submitted ?? 0} />
+            <StatCard label="Skipped" value={botStatus.skipped ?? 0} />
+            <StatCard label="Failed" value={botStatus.failed ?? 0} />
+            <StatCard label="Pending" value={botStatus.pending ?? 0} />
+          </div>
+          {botStatus.recent_events && botStatus.recent_events.length > 0 && (
+            <div className="mt-4 max-h-48 overflow-y-auto rounded-2xl border border-ink-200 bg-ink-50 p-4 font-mono text-xs text-ink-600">
+              {botStatus.recent_events.slice(-10).map((ev, i) => (
+                <p key={`${ev.ts}-${i}`} className="py-0.5">
+                  [{ev.level}] {ev.message}
+                </p>
+              ))}
+            </div>
+          )}
         </section>
       )}
 

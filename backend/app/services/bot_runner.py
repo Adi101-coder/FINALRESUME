@@ -209,13 +209,29 @@ class BotRunnerService:
         except Exception:
             return False
         if platform == "linkedin":
+            # Handle LinkedIn + Google login flow
+            # Not logged in if we're on checkpoint/challenge pages
+            if "linkedin.com/checkpoint" in url or "challenge" in url:
+                return False
             return "/feed" in url or "sign out" in body
         if platform == "indeed":
+            # Not logged in if on Google OAuth or login page
+            if "accounts.google.com" in url or "signin" in url or "login" in url:
+                return False
             return "sign out" in body or "/profile" in url or "my jobs" in body
         if platform == "naukri":
+            # Not logged in if on Google OAuth or login page
+            if "accounts.google.com" in url or "signin" in url or "login" in url or "nlogin" in url:
+                return False
             return "/mnjuser/" in url or "my naukri" in body
         if platform == "foundit":
+            if "accounts.google.com" in url or "signin" in url or "login" in url:
+                return False
             return "sign out" in body or "logout" in body
+        if platform == "glassdoor":
+            if "accounts.google.com" in url or "signin" in url or "login" in url:
+                return False
+            return "sign out" in body or "log out" in body
         return "sign out" in body or "log out" in body
 
     def _run_login(self, run: BotRun, platform: str) -> None:
@@ -227,13 +243,17 @@ class BotRunnerService:
         login_url = self.LOGIN_URLS[platform]
         self._log(
             run,
-            f"Opening your Chrome on {platform} (reuses your existing logins).",
+            f"Opening your browser on {platform} (reuses your existing logins from Chrome/Firefox/Safari).",
+        )
+        self._log(
+            run,
+            "IMPORTANT: If you use 'Sign in with Google', make sure you're logged into that Google account in your browser profile. Close ALL Chrome/Firefox/Safari windows before starting.",
         )
         try:
             with sync_playwright() as pw:
                 try:
                     context = open_system_chrome_context(pw)
-                    self._log(run, "Your Chrome profile opened — checking login status…")
+                    self._log(run, "Your browser profile opened — checking login status…")
                 except RuntimeError as exc:
                     # Fallback: fresh window with manual login (old behavior).
                     self._log(run, f"{exc} Opening a separate login window instead.", level="warning")
@@ -259,8 +279,9 @@ class BotRunnerService:
                     else:
                         self._log(
                             run,
-                            f"Log in to {platform} in the opened Chrome window, "
-                            "then press 'Login done' here.",
+                            f"Log in to {platform} in the opened browser window. "
+                            "If using 'Sign in with Google', complete the Google sign-in flow. "
+                            "Then press 'Login done' here.",
                         )
                     while not logged_in and time.time() < deadline:
                         if run.stop_requested:
@@ -290,7 +311,9 @@ class BotRunnerService:
                             db.close()
                         with self._lock:
                             run.submitted += 1
-                        self._log(run, f"{platform} session saved. You can now auto-apply.")
+                        self._log(run, f"{platform} session saved. Browser will stay open for 30 seconds for verification — then close automatically.")
+                        # Keep browser open for 30 seconds so user can verify login
+                        time.sleep(30)
                     try:
                         context.close()
                     except Exception:
@@ -337,6 +360,7 @@ class BotRunnerService:
         job_id: int | None = None,
         job_title: str | None = None,
         job_company: str | None = None,
+        max_jobs: int | None = None,
     ) -> dict:
         if not self._playwright_available():
             raise RuntimeError("Playwright not installed. Run: playwright install chromium")
@@ -360,7 +384,7 @@ class BotRunnerService:
 
         thread = threading.Thread(
             target=self._run,
-            args=(run, platform, continuous, batch_size, delay_sec, job_url, job_id, job_title, job_company),
+            args=(run, platform, continuous, batch_size, delay_sec, job_url, job_id, job_title, job_company, max_jobs),
             daemon=True,
             name=f"bot-{candidate_id}",
         )
@@ -372,12 +396,28 @@ class BotRunnerService:
         """Check if a valid session exists for the platform."""
         session_file = self._session_dir / f"{platform}_session.json"
         if session_file.exists():
-            return True
+            try:
+                import json
+                with open(session_file) as f:
+                    state = json.load(f)
+                cookies = state.get("cookies", [])
+                # Check for essential cookies
+                essential_cookies = ["li_at", "JSESSIONID", "SESSION", "csrf_token"]
+                has_essential = any(c["name"] in essential_cookies for c in cookies)
+                if has_essential and cookies:
+                    return True
+            except Exception:
+                pass
         db = SessionLocal()
         try:
             from app.services.session_store import get_session
             state = get_session(db, candidate_id, platform)
-            return state is not None
+            if state:
+                cookies = state.get("cookies", [])
+                essential_cookies = ["li_at", "JSESSIONID", "SESSION", "csrf_token"]
+                has_essential = any(c["name"] in essential_cookies for c in cookies)
+                return has_essential and len(cookies) > 0
+            return False
         except Exception:
             return False
         finally:
@@ -402,6 +442,7 @@ class BotRunnerService:
         job_id: int | None,
         job_title: str | None,
         job_company: str | None,
+        max_jobs: int | None = None,
     ) -> None:
         from app.agents.browser.runner import AutoApplyRunner
         from app.database.models import Candidate
@@ -472,6 +513,7 @@ class BotRunnerService:
                         max_rounds=None if continuous else 1,
                         debug=True,
                         stop_check=lambda: run.stop_requested,
+                        max_jobs=max_jobs,
                     )
                 else:
                     runner.platform_run_until_stop(
@@ -484,6 +526,7 @@ class BotRunnerService:
                         delay_sec=delay_sec,
                         max_rounds=None if continuous else 1,
                         stop_check=lambda: run.stop_requested,
+                        max_jobs=max_jobs,
                     )
 
             with self._lock:

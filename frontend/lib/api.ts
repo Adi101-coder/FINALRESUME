@@ -14,21 +14,35 @@ async function apiFetch(path: string, init?: RequestInit, timeoutMs = 120_000): 
     });
     if (res.status === 502 || res.status === 503) {
       throw new Error(
-        `Backend unavailable (${res.status}). Render may be waking up or crashed — open ${API_URL}/health in a new tab, wait for ok, then retry.`,
+        `Backend is starting up (${res.status}). Please wait 30-60 seconds and try again. You can check ${API_URL}/health to confirm it's ready.`,
       );
+    }
+    if (res.status === 404) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(detail || "Resource not found. Please check your input and try again.");
+    }
+    if (res.status >= 500) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(detail || `Server error (${res.status}). Please try again later.`);
     }
     return res;
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       throw new Error(
-        `Backend timed out after ${timeoutMs / 1000}s (${API_URL}). Render free tier may be waking up — wait 1 minute and retry.`,
+        `Request timed out after ${timeoutMs / 1000}s. The backend may be waking up (free tier) — please wait a minute and retry.`,
       );
     }
-    if (err instanceof Error && err.message.includes("Backend unavailable")) {
+    if (err instanceof Error && err.message.includes("Backend is starting")) {
+      throw err;
+    }
+    if (err instanceof Error && err.message.includes("Resource not found")) {
+      throw err;
+    }
+    if (err instanceof Error && err.message.includes("Server error")) {
       throw err;
     }
     throw new Error(
-      `Cannot reach backend at ${API_URL}. If the browser shows a CORS error, the API is usually down (502) — open ${API_URL}/health first.`,
+      `Cannot connect to backend at ${API_URL}. Make sure the backend is running (check ${API_URL}/health). If you see a CORS error, the backend may be down (502).`,
     );
   } finally {
     clearTimeout(timer);

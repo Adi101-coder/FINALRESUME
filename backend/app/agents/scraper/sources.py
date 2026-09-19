@@ -16,6 +16,8 @@ from app.config import settings
 
 logger = logging.getLogger("app.scraper")
 
+_INDEED_BROWSER_CACHE: dict[str, tuple[list[dict], int | None]] = {}
+
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -258,8 +260,191 @@ class IndeedScraper(BaseJobScraper):
         elif jobs:
             self.last_error = None
 
+        # Browser fallback using Playwright when RSS and HTML both fail
+        if not jobs and not rss_ok:
+            try:
+                browser_jobs, browser_total = await self._fetch_jobs_browser_fallback(query, location, limit, domain)
+                if browser_jobs:
+                    jobs = browser_jobs
+                    self.last_total_available = browser_total or len(jobs)
+                    self.last_error = None
+                    logger.info("Indeed browser fallback succeeded: %d jobs", len(jobs))
+            except Exception as exc:
+                logger.warning("Indeed browser fallback failed: %s", exc)
+
         logger.info("Indeed kept %d jobs (site total=%s)", len(jobs), self.last_total_available)
         return jobs
+
+    async def _fetch_jobs_browser_fallback(
+        self, query: str, location: str, limit: int, domain: str
+    ) -> tuple[list[dict], int | None]:
+        """Fetch Indeed jobs using Playwright browser automation as last resort."""
+        from playwright.async_api import async_playwright
+
+        q = quote_plus(query or "software engineer")
+        loc = quote_plus(location or "remote")
+        cache_key = f"{q}:{loc}:{limit}"
+
+        if cache_key in _INDEED_BROWSER_CACHE:
+            return _INDEED_BROWSER_CACHE[cache_key]
+
+        jobs: list[dict] = []
+        total: int | None = None
+
+        async with async_playwright() as pw:
+            # Try to use user's Chrome profile first
+            browser = None
+            context = None
+            try:
+                from app.agents.browser.runner import system_chrome_user_data_dir
+                import os
+
+                user_data_dir = system_chrome_user_data_dir()
+                if user_data_dir:
+                    profile = os.environ.get("CHROME_PROFILE", "Default").strip() or "Default"
+                    browser = await pw.chromium.launch_persistent_context(
+                        str(user_data_dir),
+                        channel="chrome",
+                        headless=True,
+                        slow_mo=0,
+                        viewport={"width": 1400, "height": 900},
+                        ignore_default_args=["--enable-automation"],
+                        args=[f"--profile-directory={profile}", "--disable-blink-features=AutomationControlled"],
+                    )
+                    context = browser
+                else:
+                    browser = await pw.chromium.launch(headless=True)
+                    context = await browser.new_context(viewport={"width": 1400, "height": 900})
+            except Exception:
+                # Fallback to basic browser
+                browser = await pw.chromium.launch(headless=True)
+                context = await browser.new_context(viewport={"width": 1400, "height": 900})
+
+            try:
+                page = await context.new_page()
+                url = f"https://{domain}/jobs?q={q}&l={loc}"
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+                # Wait for job cards to load - try multiple selectors
+                job_card_selectors = [
+                    "td.resultContent",
+                    "div.jobsearch-ResultsList li",
+                    "div.job_seen_beacon",
+                    "div[data-jk]",
+                    "div.result",
+                    "li[data-testid='result']",
+                    "article.jobResult",
+                    "div.mosaic-provider-jobcards li",
+                ]
+                for selector in job_card_selectors:
+                    try:
+                        await page.wait_for_selector(selector, timeout=5000)
+                        break
+                    except Exception:
+                        continue
+
+                # Try to get total count
+                body_text = await page.inner_text("body")
+                total = _parse_total_count(body_text)
+
+                # Extract job cards - try multiple selectors
+                cards = []
+                for selector in job_card_selectors:
+                    cards = await page.query_selector_all(selector)
+                    if cards:
+                        break
+
+                for card in cards[: limit * 2]:
+                    if len(jobs) >= limit:
+                        break
+                    # Try multiple title selectors
+                    title_el = None
+                    for title_selector in [
+                        "h2.jobTitle a",
+                        "h2.jobTitle",
+                        "a.jcs-JobTitle",
+                        "a[data-testid='job-title']",
+                        "h2 a",
+                        "h3 a",
+                        "a.title",
+                    ]:
+                        title_el = await card.query_selector(title_selector)
+                        if title_el:
+                            break
+                    if not title_el:
+                        continue
+                    title = await title_el.inner_text()
+                    title = title.strip()
+                    href = await title_el.get_attribute("href")
+                    if not href:
+                        for link_selector in [
+                            "a[href*='/rc/clk']",
+                            "a[href*='/pagead/']",
+                            "h2.jobTitle a",
+                            "a[data-testid='job-link']",
+                            "h2 a",
+                        ]:
+                            link_el = await card.query_selector(link_selector)
+                            if link_el:
+                                href = await link_el.get_attribute("href")
+                                break
+                    apply_url = (
+                        href
+                        if href and href.startswith("http")
+                        else (f"https://{domain}{href}" if href and href.startswith("/") else "")
+                    )
+                    # Try multiple company selectors
+                    company_el = None
+                    for company_selector in [
+                        "[data-testid='company-name']",
+                        "span.companyName",
+                        "div.companyName",
+                        "a[data-testid='company-link']",
+                        "span.company",
+                    ]:
+                        company_el = await card.query_selector(company_selector)
+                        if company_el:
+                            break
+                    company = (await company_el.inner_text()).strip() if company_el else "Indeed Employer"
+                    # Try multiple location selectors
+                    loc_el = None
+                    for loc_selector in [
+                        "[data-testid='text-location']",
+                        "div.companyLocation",
+                        "span.location",
+                        "div.location",
+                        "[data-testid='job-location']",
+                    ]:
+                        loc_el = await card.query_selector(loc_selector)
+                        if loc_el:
+                            break
+                    loc_text = (await loc_el.inner_text()).strip() if loc_el else (location or "Remote")
+
+                    if query and not _matches_query(f"{title} {company}", query):
+                        continue
+                    if not title:
+                        continue
+                    jobs.append(
+                        _job(
+                            title=title,
+                            company=company,
+                            location=loc_text,
+                            apply_url=apply_url,
+                            source=self.source_name,
+                            application_type="indeed",
+                        )
+                    )
+            finally:
+                if context:
+                    await context.close()
+                if browser and hasattr(browser, 'close'):
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
+
+        _INDEED_BROWSER_CACHE[cache_key] = (jobs, total)
+        return jobs, total
 
 
 class ZipRecruiterScraper(BaseJobScraper):

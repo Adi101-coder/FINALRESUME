@@ -28,6 +28,18 @@ const JOB_TYPES = [
   { key: "hybrid", label: "Hybrid" },
 ];
 
+function parseJobTitles(input: string): string[] {
+  return input
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .map((t) => t.replace(/^"|"$/g, "").replace(/^'|'$/g, ""));
+}
+
+function formatJobTitles(titles: string[]): string {
+  return titles.map((t) => (t.includes(",") ? `"${t}"` : t)).join(", ");
+}
+
 export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
   const [config, setConfig] = useState<AutoApplyConfig | null>(null);
   const [titlesInput, setTitlesInput] = useState("Software Developer, Frontend Developer");
@@ -39,12 +51,13 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [availCheckInterval, setAvailCheckInterval] = useState<NodeJS.Timeout | null>(null);
 
   const load = useCallback(async (id: number) => {
     try {
       const data = await getAutoApplyConfig(id);
       setConfig(data);
-      setTitlesInput(data.job_titles.join(", "));
+      setTitlesInput(formatJobTitles(data.job_titles));
       setLocation(data.location || "Remote");
       setRemoteType(data.remote_type || "");
     } catch (err) {
@@ -77,9 +90,26 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
     }
   }, [candidateId, load, loadBotStatus]);
 
+  const startAvailabilityPolling = useCallback(() => {
+    if (availCheckInterval) return;
+    const interval = setInterval(() => {
+      checkBotAvailability();
+    }, 30000);
+    setAvailCheckInterval(interval);
+  }, [availCheckInterval, checkBotAvailability]);
+
+  const stopAvailabilityPolling = useCallback(() => {
+    if (availCheckInterval) {
+      clearInterval(availCheckInterval);
+      setAvailCheckInterval(null);
+    }
+  }, [availCheckInterval]);
+
   useEffect(() => {
     void checkBotAvailability();
-  }, [checkBotAvailability]);
+    startAvailabilityPolling();
+    return () => stopAvailabilityPolling();
+  }, [checkBotAvailability, startAvailabilityPolling, stopAvailabilityPolling]);
 
   useEffect(() => {
     if (!candidateId || botStatus?.state !== "running") return;
@@ -99,7 +129,7 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
     setLoading(true);
     setError("");
     try {
-      const titles = titlesInput.split(",").map((t) => t.trim()).filter(Boolean);
+      const titles = parseJobTitles(titlesInput);
       const updated = await updateAutoApplyConfig(candidateId, titles, location, remoteType || undefined);
       setConfig(updated);
       setMessage("Job search preferences saved.");
@@ -231,7 +261,7 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
             value={titlesInput}
             disabled={running}
             onChange={(e) => setTitlesInput(e.target.value)}
-            placeholder="Software Developer, Frontend Developer"
+            placeholder='Software Developer, "Senior Engineer", Frontend Developer'
           />
           <input
             className="input w-full"

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { ScoreRing } from "@/components/ScoreRing";
 import { StatCard } from "@/components/StatCard";
 import {
@@ -19,8 +20,8 @@ const PIPELINE = [
 
 const PLATFORMS = [
   { key: "linkedin", label: "LinkedIn", auth: "login required" },
-  { key: "indeed", label: "Indeed", auth: "free" },
-  { key: "foundit", label: "Foundit", auth: "free" },
+  { key: "indeed", label: "Indeed", auth: "login recommended" },
+  { key: "foundit", label: "Foundit", auth: "login recommended" },
   { key: "naukri", label: "Naukri.com", auth: "login recommended" },
   { key: "ziprecruiter", label: "ZipRecruiter", auth: "free" },
   { key: "glassdoor", label: "Glassdoor", auth: "login recommended" },
@@ -102,6 +103,7 @@ export function WorkflowPanel({
   onRemoteTypeChange,
   botRunning = false,
 }: Props) {
+  const [jobLoadingStates, setJobLoadingStates] = useState<Record<number, { personalize: boolean; apply: boolean; botApply: boolean }>>({});
   const passedCount = matches.filter((m) => m.passed_threshold).length;
   const initials = profile?.name
     ? profile.name
@@ -114,12 +116,32 @@ export function WorkflowPanel({
 
   async function handlePersonalize(jobId: number) {
     if (!candidateId) return;
-    onPersonalize(jobId);
+    setJobLoadingStates((prev) => ({ ...prev, [jobId]: { ...prev[jobId], personalize: true } }));
+    try {
+      await onPersonalize(jobId);
+    } finally {
+      setJobLoadingStates((prev) => ({ ...prev, [jobId]: { ...prev[jobId], personalize: false } }));
+    }
   }
 
   async function handleApply(match: MatchResult) {
     if (!candidateId) return;
-    onApply(match);
+    setJobLoadingStates((prev) => ({ ...prev, [match.job_id]: { ...prev[match.job_id], apply: true } }));
+    try {
+      await onApply(match);
+    } finally {
+      setJobLoadingStates((prev) => ({ ...prev, [match.job_id]: { ...prev[match.job_id], apply: false } }));
+    }
+  }
+
+  async function handleBotApply(match: MatchResult) {
+    if (!candidateId) return;
+    setJobLoadingStates((prev) => ({ ...prev, [match.job_id]: { ...prev[match.job_id], botApply: true } }));
+    try {
+      await onBotApply?.(match);
+    } finally {
+      setJobLoadingStates((prev) => ({ ...prev, [match.job_id]: { ...prev[match.job_id], botApply: false } }));
+    }
   }
 
   return (
@@ -253,6 +275,22 @@ export function WorkflowPanel({
                         {loginPlatform === s.platform ? "Logging in…" : "Log in"}
                       </button>
                     )}
+                    {loginPlatform === s.platform && !s.logged_in && (
+                      <div className="mt-2 p-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
+                        <p className="font-medium">Complete login in the browser window:</p>
+                        <ul className="mt-1 list-disc list-inside space-y-0.5">
+                          <li>If you see "Sign in with Google", click it and complete Google sign-in</li>
+                          <li>Make sure you're using the correct Google account</li>
+                          <li>Close ALL other browser windows to avoid profile conflicts</li>
+                        </ul>
+                        <button
+                          className="mt-2 text-xs font-semibold text-amber-700 underline"
+                          onClick={onLoginDone}
+                        >
+                          Login done — save session
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -319,22 +357,38 @@ export function WorkflowPanel({
                 <div>
                   <p className="mb-2 text-sm font-medium text-ink">Select platforms to search</p>
                   <div className="flex flex-wrap gap-2">
-                    {PLATFORMS.map((p) => (
-                      <button
-                        key={p.key}
-                        type="button"
-                        onClick={() => onPlatformToggle?.(p.key)}
-                        className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
-                          selectedPlatforms.includes(p.key)
-                            ? "border-ink bg-ink text-white"
-                            : "border-ink-200 bg-white text-ink-600 hover:border-ink-400"
-                        }`}
-                      >
-                        {p.label}
-                        {p.auth === "login required" && " 🔒"}
-                        {p.auth === "login recommended" && " ⚡"}
-                      </button>
-                    ))}
+                    {PLATFORMS.map((p) => {
+                      const session = sessions?.find((s) => s.platform === p.key);
+                      const isLoggedIn = session?.logged_in;
+                      return (
+                        <button
+                          key={p.key}
+                          type="button"
+                          onClick={() => onPlatformToggle?.(p.key)}
+                          className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
+                            selectedPlatforms.includes(p.key)
+                              ? "border-ink bg-ink text-white"
+                              : "border-ink-200 bg-white text-ink-600 hover:border-ink-400"
+                          }`}
+                          title={
+                            p.auth === "login required"
+                              ? isLoggedIn
+                                ? "Logged in ✓"
+                                : "Requires login via Step 2"
+                              : p.auth === "login recommended"
+                              ? isLoggedIn
+                                ? "Logged in ✓ (recommended)"
+                                : "Login recommended for full access"
+                              : "Free access"
+                          }
+                        >
+                          {p.label}
+                          {isLoggedIn && " ✓"}
+                          {p.auth === "login required" && !isLoggedIn && " 🔒"}
+                          {p.auth === "login recommended" && !isLoggedIn && " ⚡"}
+                        </button>
+                      );
+                    })}
                   </div>
                   {selectedPlatforms.some(
                     (sp) => PLATFORMS.find((p) => p.key === sp)?.auth === "login required",
@@ -347,7 +401,10 @@ export function WorkflowPanel({
                           .filter((p) => p?.auth === "login required")
                           .map((p) => (
                             <li key={p!.key}>
-                              <strong>{p!.label}</strong> — Log in via Step 2 above for complete results and applying.
+                              <strong>{p!.label}</strong> —{" "}
+                              {sessions?.find((s) => s.platform === p!.key)?.logged_in
+                                ? "Logged in ✓"
+                                : "Log in via Step 2 above for complete results and applying."}
                             </li>
                           ))}
                       </ul>
@@ -381,6 +438,7 @@ export function WorkflowPanel({
               disabled={!candidateId || loading || (selectedPlatforms.length === 0 && !discovery)}
               onClick={() => {
                 logClick("click_discover_and_match");
+                onAutoApplyArmedChange?.(false);
                 onDiscoverAndMatch();
               }}
             >
@@ -498,27 +556,31 @@ export function WorkflowPanel({
                       <button
                         className="btn-dark min-w-[120px]"
                         disabled={
-                          loading || botRunning || appliedIds.has(match.job_id) || !autoApplyArmed
+                          loading ||
+                          botRunning ||
+                          appliedIds.has(match.job_id) ||
+                          !autoApplyArmed ||
+                          jobLoadingStates[match.job_id]?.botApply
                         }
                         title={!autoApplyArmed ? "Confirm counts above first" : "Auto apply"}
-                        onClick={() => void onBotApply(match)}
+                        onClick={() => void handleBotApply(match)}
                       >
-                        {botRunning ? "Bot running…" : "Auto apply"}
+                        {jobLoadingStates[match.job_id]?.botApply ? "Applying…" : botRunning ? "Bot running…" : "Auto apply"}
                       </button>
                     )}
                     <button
                       className="btn-outline min-w-[120px]"
-                      disabled={loading}
+                      disabled={loading || jobLoadingStates[match.job_id]?.personalize}
                       onClick={() => void handlePersonalize(match.job_id)}
                     >
-                      Personalize
+                      {jobLoadingStates[match.job_id]?.personalize ? "Personalizing…" : "Personalize"}
                     </button>
                     <button
                       className="btn-outline min-w-[120px]"
-                      disabled={loading || appliedIds.has(match.job_id)}
+                      disabled={loading || appliedIds.has(match.job_id) || jobLoadingStates[match.job_id]?.apply}
                       onClick={() => void handleApply(match)}
                     >
-                      {appliedIds.has(match.job_id) ? "Applied" : "Mark applied"}
+                      {jobLoadingStates[match.job_id]?.apply ? "Applying…" : appliedIds.has(match.job_id) ? "Applied" : "Mark applied"}
                     </button>
                   </div>
                 </article>
