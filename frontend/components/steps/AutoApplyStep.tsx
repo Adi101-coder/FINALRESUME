@@ -56,7 +56,14 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
   const handleStartBot = async () => {
     setBotRunning(true);
     try {
-      await startBot(candidateId, { platform: config?.job_titles?.[0] || "linkedin", continuous: false, batchSize: 1 });
+      // Convert review queue matches to job format for the bot
+      const jobs = reviewQueue.map((match) => ({
+        title: match.title,
+        company: match.company,
+        apply_url: match.apply_url,
+        job_id: match.job_id,
+      }));
+      await startBot(candidateId, { platform: config?.job_titles?.[0] || "linkedin", continuous: false, batchSize: 1, jobs });
     } catch (err) {
       setBotRunning(false);
     }

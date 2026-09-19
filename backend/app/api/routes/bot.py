@@ -26,6 +26,7 @@ class BotStartRequest(BaseModel):
     job_company: str | None = None
     max_jobs: int | None = Field(default=None, ge=1, le=100, description="Maximum jobs to apply to in continuous mode")
     apply_mode: str | None = Field(default="top", description="Apply mode: 'top' for only jobs that passed threshold, 'all' for all matched jobs")
+    jobs: list[dict] | None = Field(default=None, description="List of specific jobs to apply to (from review queue)")
 
 
 class BotLoginRequest(BaseModel):
@@ -58,6 +59,7 @@ def bot_start(payload: BotStartRequest):
             job_company=payload.job_company,
             max_jobs=payload.max_jobs,
             apply_mode=payload.apply_mode,
+            jobs=payload.jobs,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

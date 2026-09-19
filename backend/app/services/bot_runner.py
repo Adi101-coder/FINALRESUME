@@ -380,6 +380,7 @@ class BotRunnerService:
         job_company: str | None = None,
         max_jobs: int | None = None,
         apply_mode: str | None = "top",
+        jobs: list[dict] | None = None,
     ) -> dict:
         if not self._playwright_available():
             raise RuntimeError("Playwright not installed. Run: playwright install chromium")
@@ -403,7 +404,7 @@ class BotRunnerService:
 
         thread = threading.Thread(
             target=self._run,
-            args=(run, platform, continuous, batch_size, delay_sec, job_url, job_id, job_title, job_company, max_jobs, apply_mode),
+            args=(run, platform, continuous, batch_size, delay_sec, job_url, job_id, job_title, job_company, max_jobs, apply_mode, jobs),
             daemon=True,
             name=f"bot-{candidate_id}",
         )
@@ -463,6 +464,7 @@ class BotRunnerService:
         job_company: str | None,
         max_jobs: int | None = None,
         apply_mode: str | None = "top",
+        jobs: list[dict] | None = None,
     ) -> None:
         from app.agents.browser.runner import AutoApplyRunner
         from app.database.models import Candidate
@@ -513,7 +515,11 @@ class BotRunnerService:
             ) as runner:
                 runner.on_apply_result = on_result
 
-                if job_url:
+                if jobs:
+                    # Use specific jobs from review queue
+                    self._log(run, f"Applying to {len(jobs)} specific jobs from review queue")
+                    runner.apply_many(jobs, profile, resume_path, delay_sec=delay_sec)
+                elif job_url:
                     self._log(run, f"Single apply: {job_url}")
                     job = {
                         "title": job_title or "Job",
