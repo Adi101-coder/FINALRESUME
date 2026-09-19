@@ -88,6 +88,13 @@ export function MatchStep({
   };
 
   const [loginBusy, setLoginBusy] = useState(false);
+  const [isLocal, setIsLocal] = useState(false);
+
+  useEffect(() => {
+    fetch("http://localhost:8000/health", { mode: "no-cors" })
+      .then(() => setIsLocal(true))
+      .catch(() => setIsLocal(false));
+  }, []);
 
   const handleLogin = async (platform: string) => {
     setLoginPlatform(platform);
@@ -111,7 +118,13 @@ export function MatchStep({
           break;
         }
       }
-      setInfo(`Browser opened for ${platform}. Finish sign-in there, then press "Login done". You stay on this page.`);
+      if (!isLocal) {
+        setInfo(
+          `${platform} login started on the server. On the hosted version, browser login doesn't work (no display). Run locally for full login support, or use free boards (Remotive, RemoteOK, Arbeitnow, Greenhouse, ZipRecruiter) which work without login.`,
+        );
+      } else {
+        setInfo(`Browser opened for ${platform}. Finish sign-in there, then press "Login done". You stay on this page.`);
+      }
     } catch (err) {
       onError(err instanceof Error ? err.message : "Login failed");
       setLoginPlatform(null);

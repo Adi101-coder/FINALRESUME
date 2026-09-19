@@ -84,6 +84,15 @@ export function PlatformStep({
 
   const [loginBusy, setLoginBusy] = useState(false);
 
+  const [isLocal, setIsLocal] = useState(false);
+
+  useEffect(() => {
+    // Check if running locally by trying to reach localhost
+    fetch("http://localhost:8000/health", { mode: "no-cors" })
+      .then(() => setIsLocal(true))
+      .catch(() => setIsLocal(false));
+  }, []);
+
   const handleLogin = async (platform: string) => {
     setLoginPlatform(platform);
     setLoginBusy(true);
@@ -91,7 +100,7 @@ export function PlatformStep({
     onError("");
     try {
       await startBotLogin(candidateId, platform);
-      // Poll bot status so backend failures (e.g. no display on hosted server) surface immediately
+      // Poll bot status so backend failures surface immediately
       for (let i = 0; i < 10; i += 1) {
         await new Promise((r) => setTimeout(r, 1500));
         try {
@@ -107,9 +116,15 @@ export function PlatformStep({
           break;
         }
       }
-      setInfo(
-        `Browser opened for ${platform}. Complete sign-in (Google OAuth if shown), then press "Login done". You stay on this page.`,
-      );
+      if (!isLocal) {
+        setInfo(
+          `${platform} login started on the server. On the hosted version, browser login doesn't work (no display). Run locally for full login support, or use free boards (Remotive, RemoteOK, Arbeitnow, Greenhouse, ZipRecruiter) which work without login.`,
+        );
+      } else {
+        setInfo(
+          `Browser opened for ${platform}. Complete sign-in (Google OAuth if shown), then press "Login done". You stay on this page.`,
+        );
+      }
     } catch (err) {
       onError(err instanceof Error ? err.message : "Login failed");
       setLoginPlatform(null);
