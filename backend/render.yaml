@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: resumebuild-api
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r requirements.txt && playwright install --with-deps chromium"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:///./resumebuild.db
+      - key: CORS_ORIGINS
+        value: "https://resumebuild-frontend.vercel.app"
+      - key: EMBEDDING_FALLBACK
+        value: "true"
