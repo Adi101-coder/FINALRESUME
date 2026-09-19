@@ -1119,7 +1119,8 @@ class NaukriScraper(BaseJobScraper):
                     "jobAge": 30,
                 }
                 headers = dict(DEFAULT_HEADERS)
-                headers["Accept"] = "application/json"
+                headers["Accept"] = "*/*"
+                headers["Accept-Language"] = "en-US,en;q=0.9"
                 headers["Referer"] = "https://www.naukri.com/"
                 headers["Origin"] = "https://www.naukri.com"
                 headers["appid"] = settings.naukri_app_id.strip() or "109"
@@ -1128,7 +1129,6 @@ class NaukriScraper(BaseJobScraper):
                 headers["gid"] = "LOCATION,INDUSTRY,EDUCATION,FAREA_ROLE"
                 headers["nkparam"] = nkparam
                 headers["x-requested-with"] = "XMLHttpRequest"
-                headers["Content-Type"] = "application/json"
                 if settings.naukri_session_cookie:
                     headers["Cookie"] = settings.naukri_session_cookie
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1137,14 +1137,6 @@ class NaukriScraper(BaseJobScraper):
                         headers=headers,
                         params=api_params,
                     )
-                    if resp.status_code == 406:
-                        # Try with different Accept header
-                        headers["Accept"] = "*/*"
-                        resp = await client.get(
-                            "https://www.naukri.com/jobapi/v3/search",
-                            headers=headers,
-                            params=api_params,
-                        )
                     resp.raise_for_status()
                     data = resp.json()
                 try:

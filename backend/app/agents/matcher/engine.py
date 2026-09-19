@@ -12,7 +12,7 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 class MatchingEngine:
     """Score resume vs job description on multiple dimensions."""
 
-    def __init__(self, threshold: float = 75.0) -> None:
+    def __init__(self, threshold: float = 60.0) -> None:
         self.threshold = threshold
         self._embedder = None
 
@@ -43,11 +43,11 @@ class MatchingEngine:
         embedding_score = self._embedding_score(profile_data, job, profile_vec=profile_vec)
 
         final = round(
-            relevance_score * 0.55
-            + skills_score * 0.10
-            + experience_score * 0.10
+            relevance_score * 0.50
+            + skills_score * 0.15
+            + experience_score * 0.15
             + embedding_score * 0.15
-            + location_score * 0.10,
+            + location_score * 0.05,
             1,
         )
 
@@ -112,18 +112,18 @@ class MatchingEngine:
     def _relevance_score(self, terms: list[str], job: dict, job_skills: list[str]) -> float:
         """How well the job title/description matches the resume's role + skill vocabulary."""
         if not terms:
-            return 0.0
+            return 30.0
         title_text = " ".join([str(job.get("title", "")), str(job.get("company", ""))]).lower()
         description = _HTML_TAG_RE.sub(" ", str(job.get("description", ""))).lower()
 
         title_hits = sum(1 for term in terms if term in title_text)
-        title_pct = min(100.0, (title_hits / len(terms)) * 400)
+        title_pct = min(100.0, (title_hits / max(len(terms), 1)) * 300)
 
         desc_hits = sum(1 for term in terms if term in description)
-        desc_pct = min(100.0, (desc_hits / len(terms)) * 500)
+        desc_pct = min(100.0, (desc_hits / max(len(terms), 1)) * 400)
 
         skills_hits = sum(1 for skill in job_skills if skill in terms)
-        skills_pct = (skills_hits / len(job_skills)) * 100 if job_skills else 0.0
+        skills_pct = (skills_hits / max(len(job_skills), 1)) * 100 if job_skills else 0.0
 
         return round(0.5 * title_pct + 0.3 * desc_pct + 0.2 * skills_pct, 1)
 
@@ -136,36 +136,41 @@ class MatchingEngine:
     ) -> float:
         if not job_skills:
             overlap = sum(1 for token in description.split() if token in profile_text)
-            return min(100.0, overlap / max(len(set(description.split())), 1) * 200)
+            return min(100.0, overlap / max(len(set(description.split())), 1) * 150) + 20
 
         matched = 0
         for skill in job_skills:
             if skill in profile_skills or skill in profile_text:
                 matched += 1
-        return (matched / len(job_skills)) * 100
+        return (matched / max(len(job_skills), 1)) * 100 + 15
 
     def _experience_score(self, profile: dict, description: str) -> float:
         bullets = []
         for exp in profile.get("experience", []):
             bullets.extend(exp.get("bullets", []))
         if not bullets:
-            return 50.0 if profile.get("skills") else 30.0
+            return 40.0 if profile.get("skills") else 25.0
 
-        hits = sum(1 for bullet in bullets if any(token in bullet.lower() for token in description.split()[:50]))
-        return min(100.0, (hits / len(bullets)) * 100 + 20)
+        hits = sum(1 for bullet in bullets if any(token in bullet.lower() for token in description.split()[:80]))
+        return min(100.0, (hits / max(len(bullets), 1)) * 120 + 25)
 
     def _location_score(self, candidate_location: str, job_location: str) -> float:
         if not job_location:
-            return 80.0
+            return 85.0
         if not candidate_location:
-            return 50.0
+            return 60.0
         c = candidate_location.lower()
         j = job_location.lower()
         if "remote" in j:
-            return 95.0
+            return 100.0
         if c in j or j in c:
             return 100.0
-        return 40.0
+        # Partial match for country/region
+        c_parts = c.replace(",", " ").split()
+        j_parts = j.replace(",", " ").split()
+        if any(p in j_parts for p in c_parts if len(p) > 2):
+            return 80.0
+        return 50.0
 
     def _embedding_score(self, profile: dict, job: dict, *, profile_vec=None) -> float:
         job_doc = " ".join(
@@ -183,4 +188,5 @@ class MatchingEngine:
             profile_vec = self.embedder.embed_text(profile_doc)
         job_vec = self.embedder.embed_text(job_doc)
         similarity = float((profile_vec @ job_vec.T)[0][0])
-        return max(0.0, min(100.0, similarity * 100))
+        # Boost similarity to 0-100 with minimum floor
+        return max(20.0, min(100.0, similarity * 120))
