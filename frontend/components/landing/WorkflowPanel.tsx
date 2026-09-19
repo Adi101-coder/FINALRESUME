@@ -19,16 +19,16 @@ const PIPELINE = [
 ];
 
 const PLATFORMS = [
-  { key: "linkedin", label: "LinkedIn", auth: "login required" },
-  { key: "indeed", label: "Indeed", auth: "login recommended" },
-  { key: "foundit", label: "Foundit", auth: "login recommended" },
-  { key: "naukri", label: "Naukri.com", auth: "login recommended" },
-  { key: "ziprecruiter", label: "ZipRecruiter", auth: "free" },
-  { key: "glassdoor", label: "Glassdoor", auth: "login recommended" },
-  { key: "greenhouse", label: "Greenhouse", auth: "free" },
-  { key: "remotive", label: "Remotive", auth: "free" },
-  { key: "remoteok", label: "RemoteOK", auth: "free" },
-  { key: "arbeitnow", label: "Arbeitnow", auth: "free" },
+  { key: "linkedin", label: "LinkedIn", auth: "login required", needsLoginForSearch: true },
+  { key: "indeed", label: "Indeed", auth: "login recommended", needsLoginForSearch: true },
+  { key: "foundit", label: "Foundit", auth: "login recommended", needsLoginForSearch: true },
+  { key: "naukri", label: "Naukri.com", auth: "login recommended", needsLoginForSearch: true },
+  { key: "ziprecruiter", label: "ZipRecruiter", auth: "free", needsLoginForSearch: false },
+  { key: "glassdoor", label: "Glassdoor", auth: "login recommended", needsLoginForSearch: true },
+  { key: "greenhouse", label: "Greenhouse", auth: "free", needsLoginForSearch: false },
+  { key: "remotive", label: "Remotive", auth: "free", needsLoginForSearch: false },
+  { key: "remoteok", label: "RemoteOK", auth: "free", needsLoginForSearch: false },
+  { key: "arbeitnow", label: "Arbeitnow", auth: "free", needsLoginForSearch: false },
 ];
 
 const JOB_TYPES = [
@@ -72,6 +72,7 @@ type Props = {
   onPlatformToggle?: (platform: string) => void;
   onRemoteTypeChange?: (type: string) => void;
   botRunning?: boolean;
+  onError?: (error: string) => void;
 };
 
 export function WorkflowPanel({
@@ -102,6 +103,7 @@ export function WorkflowPanel({
   onPlatformToggle,
   onRemoteTypeChange,
   botRunning = false,
+  onError,
 }: Props) {
   const [jobLoadingStates, setJobLoadingStates] = useState<Record<number, { personalize: boolean; apply: boolean; botApply: boolean }>>({});
   const passedCount = matches.filter((m) => m.passed_threshold).length;
@@ -360,51 +362,55 @@ export function WorkflowPanel({
                     {PLATFORMS.map((p) => {
                       const session = sessions?.find((s) => s.platform === p.key);
                       const isLoggedIn = session?.logged_in;
+                      const needsLogin = p.needsLoginForSearch && !isLoggedIn;
                       return (
                         <button
                           key={p.key}
                           type="button"
-                          onClick={() => onPlatformToggle?.(p.key)}
+                          onClick={() => {
+                            if (needsLogin) {
+                              onLogin(p.key);
+                            } else {
+                              onPlatformToggle?.(p.key);
+                            }
+                          }}
                           className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
                             selectedPlatforms.includes(p.key)
                               ? "border-ink bg-ink text-white"
+                              : needsLogin
+                              ? "border-amber-300 bg-amber-50 text-amber-800 hover:border-amber-400"
                               : "border-ink-200 bg-white text-ink-600 hover:border-ink-400"
                           }`}
                           title={
-                            p.auth === "login required"
-                              ? isLoggedIn
-                                ? "Logged in ✓"
-                                : "Requires login via Step 2"
+                            needsLogin
+                              ? "Click to log in first"
                               : p.auth === "login recommended"
                               ? isLoggedIn
                                 ? "Logged in ✓ (recommended)"
                                 : "Login recommended for full access"
-                              : "Free access"
+                              : "Free access — click to select"
                           }
                         >
                           {p.label}
                           {isLoggedIn && " ✓"}
-                          {p.auth === "login required" && !isLoggedIn && " 🔒"}
-                          {p.auth === "login recommended" && !isLoggedIn && " ⚡"}
+                          {needsLogin && " 🔒"}
+                          {p.auth === "login recommended" && !isLoggedIn && !needsLogin && " ⚡"}
                         </button>
                       );
                     })}
                   </div>
                   {selectedPlatforms.some(
-                    (sp) => PLATFORMS.find((p) => p.key === sp)?.auth === "login required",
+                    (sp) => PLATFORMS.find((p) => p.key === sp)?.needsLoginForSearch && !sessions?.find((s) => s.platform === sp)?.logged_in,
                   ) && (
                     <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                      <p className="font-medium">Platforms requiring login selected:</p>
+                      <p className="font-medium">Some selected platforms need login:</p>
                       <ul className="mt-1 list-inside list-disc">
                         {selectedPlatforms
                           .map((sp) => PLATFORMS.find((p) => p.key === sp))
-                          .filter((p) => p?.auth === "login required")
+                          .filter((p) => p?.needsLoginForSearch && !sessions?.find((s) => s.platform === p!.key)?.logged_in)
                           .map((p) => (
                             <li key={p!.key}>
-                              <strong>{p!.label}</strong> —{" "}
-                              {sessions?.find((s) => s.platform === p!.key)?.logged_in
-                                ? "Logged in ✓"
-                                : "Log in via Step 2 above for complete results and applying."}
+                              <strong>{p!.label}</strong> — Click the platform button above to log in first.
                             </li>
                           ))}
                       </ul>
@@ -435,8 +441,18 @@ export function WorkflowPanel({
 
             <button
               className="btn-dark w-full"
-              disabled={!candidateId || loading || (selectedPlatforms.length === 0 && !discovery)}
+              disabled={!candidateId || loading || selectedPlatforms.length === 0}
               onClick={() => {
+                // Check if any selected platform needs login but user isn't logged in
+                const needsLogin = selectedPlatforms.some((sp) => {
+                  const platform = PLATFORMS.find((p) => p.key === sp);
+                  const session = sessions?.find((s) => s.platform === sp);
+                  return platform?.needsLoginForSearch && !session?.logged_in;
+                });
+                if (needsLogin) {
+                  onError?.("Some selected platforms require login. Please log in first by clicking the platform button above.");
+                  return;
+                }
                 logClick("click_discover_and_match");
                 onAutoApplyArmedChange?.(false);
                 onDiscoverAndMatch();

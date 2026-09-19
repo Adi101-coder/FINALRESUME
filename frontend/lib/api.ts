@@ -366,6 +366,8 @@ export async function startBot(
     jobId?: number;
     jobTitle?: string;
     jobCompany?: string;
+    applyMode?: "top" | "all";
+    maxJobs?: number;
   },
 ) {
   const res = await apiFetch("/api/bot/start", {
@@ -380,6 +382,8 @@ export async function startBot(
       job_id: opts?.jobId,
       job_title: opts?.jobTitle,
       job_company: opts?.jobCompany,
+      apply_mode: opts?.applyMode,
+      max_jobs: opts?.maxJobs,
     }),
   });
   if (!res.ok) throw new Error(await res.text());

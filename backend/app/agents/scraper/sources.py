@@ -161,7 +161,7 @@ class IndeedScraper(BaseJobScraper):
         self.last_error = None
         rss_ok = False
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 text = await _get_text(client, url, headers=cookie_headers)
             root = ET.fromstring(text)
             channel = root.find("channel")
@@ -202,7 +202,7 @@ class IndeedScraper(BaseJobScraper):
         html = ""
         try:
             html_url = f"https://{domain}/jobs?q={q}&l={loc}"
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=45.0) as client:
                 html = await _get_text(client, html_url, headers=cookie_headers)
             total = _parse_total_count(html)
             if total is not None:
@@ -302,28 +302,30 @@ class IndeedScraper(BaseJobScraper):
                 user_data_dir = system_chrome_user_data_dir()
                 if user_data_dir:
                     profile = os.environ.get("CHROME_PROFILE", "Default").strip() or "Default"
+                    # Use headless=False for Indeed to bypass bot detection
                     browser = await pw.chromium.launch_persistent_context(
                         str(user_data_dir),
                         channel="chrome",
-                        headless=True,
-                        slow_mo=0,
+                        headless=False,
+                        slow_mo=100,
                         viewport={"width": 1400, "height": 900},
                         ignore_default_args=["--enable-automation"],
                         args=[f"--profile-directory={profile}", "--disable-blink-features=AutomationControlled"],
                     )
                     context = browser
                 else:
-                    browser = await pw.chromium.launch(headless=True)
+                    browser = await pw.chromium.launch(headless=False, slow_mo=100)
                     context = await browser.new_context(viewport={"width": 1400, "height": 900})
-            except Exception:
+            except Exception as e:
+                logger.warning("Failed to launch persistent context: %s", e)
                 # Fallback to basic browser
-                browser = await pw.chromium.launch(headless=True)
+                browser = await pw.chromium.launch(headless=False, slow_mo=100)
                 context = await browser.new_context(viewport={"width": 1400, "height": 900})
 
             try:
                 page = await context.new_page()
                 url = f"https://{domain}/jobs?q={q}&l={loc}"
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
                 # Wait for job cards to load - try multiple selectors
                 job_card_selectors = [
@@ -338,7 +340,7 @@ class IndeedScraper(BaseJobScraper):
                 ]
                 for selector in job_card_selectors:
                     try:
-                        await page.wait_for_selector(selector, timeout=5000)
+                        await page.wait_for_selector(selector, timeout=15000)
                         break
                     except Exception:
                         continue

@@ -52,6 +52,8 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [availCheckInterval, setAvailCheckInterval] = useState<NodeJS.Timeout | null>(null);
+  const [applyMode, setApplyMode] = useState<"top" | "all">("top"); // "top" = only jobs that passed threshold, "all" = all matched jobs
+  const [maxJobs, setMaxJobs] = useState<number | null>(null); // null = no limit
 
   const load = useCallback(async (id: number) => {
     try {
@@ -160,9 +162,15 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
     setLoading(true);
     setError("");
     try {
-      const status = await startBot(candidateId, { platform, continuous: true, batchSize: 5 });
+      const status = await startBot(candidateId, { 
+        platform, 
+        continuous: true, 
+        batchSize: 5,
+        applyMode,
+        maxJobs: maxJobs || undefined,
+      });
       setBotStatus(status);
-      setMessage(`Bot started on ${platform}. Watch the browser window.`);
+      setMessage(`Bot started on ${platform} (${applyMode === "top" ? "top jobs only" : "all jobs"}${maxJobs ? `, max ${maxJobs} jobs` : ""}). Watch the browser window.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start bot");
     } finally {
@@ -289,6 +297,39 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
                 </button>
               ))}
             </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-500">Apply mode</label>
+            <div className="flex flex-wrap gap-2">
+              {(["top", "all"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  disabled={running}
+                  onClick={() => setApplyMode(mode)}
+                  className={`rounded-xl border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    applyMode === mode
+                      ? "border-ink bg-ink text-white"
+                      : "border-ink-200 bg-white text-ink-600 hover:border-ink-400"
+                  }`}
+                >
+                  {mode === "top" ? "Top jobs only (≥75%)" : "All matched jobs"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-ink-500">Max jobs (optional)</label>
+            <input
+              type="number"
+              className="input w-full max-w-[120px]"
+              value={maxJobs ?? ""}
+              onChange={(e) => setMaxJobs(e.target.value ? parseInt(e.target.value) : null)}
+              placeholder="No limit"
+              min="1"
+              max="100"
+              disabled={running}
+            />
           </div>
           <button className="btn-outline w-full" disabled={loading || running} onClick={() => void handleSaveTitles()}>
             Save search preferences

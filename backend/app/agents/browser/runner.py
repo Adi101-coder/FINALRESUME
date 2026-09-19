@@ -353,6 +353,7 @@ class AutoApplyRunner:
         debug: bool = False,
         stop_check: Callable[[], bool] | None = None,
         max_jobs: int | None = None,
+        apply_mode: str | None = "top",
     ) -> list[dict]:
         assert self._browser is not None
         context = self._new_context("linkedin")
@@ -432,6 +433,7 @@ class AutoApplyRunner:
         max_rounds: int | None = None,
         stop_check: Callable[[], bool] | None = None,
         max_jobs: int | None = None,
+        apply_mode: str | None = "top",
     ) -> list[dict]:
         config = BOARD_CONFIGS.get(platform)
         if not config:
@@ -506,6 +508,7 @@ class AutoApplyRunner:
         limit_per_title: int = 3,
         delay_sec: float = 4.0,
         max_jobs: int | None = None,
+        apply_mode: str | None = "top",
     ) -> list[dict]:
         if platform == "linkedin":
             return self.linkedin_run_until_stop(
@@ -517,6 +520,7 @@ class AutoApplyRunner:
                 delay_sec=delay_sec,
                 max_rounds=1,
                 max_jobs=max_jobs,
+                apply_mode=apply_mode,
             )
         if platform in BOARD_CONFIGS:
             return self.platform_run_until_stop(
@@ -529,6 +533,7 @@ class AutoApplyRunner:
                 delay_sec=delay_sec,
                 max_rounds=1,
                 max_jobs=max_jobs,
+                apply_mode=apply_mode,
             )
 
         assert self._browser is not None

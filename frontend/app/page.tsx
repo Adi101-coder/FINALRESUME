@@ -623,6 +623,7 @@ export default function HomePage() {
         onPlatformToggle={handlePlatformToggle}
         onRemoteTypeChange={setRemoteType}
         botRunning={botRunning}
+        onError={setError}
       />
 
       <AutoApplyPanel

@@ -268,11 +268,29 @@ class BotRunnerService:
                 try:
                     pages = context.pages
                     page = pages[0] if pages else context.new_page()
+                    
+                    # Handle Google OAuth redirect for LinkedIn
+                    def handle_google_oauth(page, platform):
+                        if platform == "linkedin":
+                            # Wait for potential Google OAuth redirect
+                            try:
+                                page.wait_for_url("**/accounts.google.com/**", timeout=10000)
+                                self._log(run, "Google OAuth detected — complete sign-in in the browser.", level="warning")
+                                # Wait for redirect back to LinkedIn
+                                page.wait_for_url("**/linkedin.com/**", timeout=120000)
+                                self._log(run, "Redirected back to LinkedIn")
+                            except Exception:
+                                pass  # No Google OAuth redirect, continue normally
+                    
                     try:
                         page.goto(login_url, wait_until="domcontentloaded", timeout=120_000)
                     except Exception:
                         pass
-                    deadline = time.time() + 300
+                    
+                    # Check for Google OAuth after navigation
+                    handle_google_oauth(page, platform)
+                    
+                    deadline = time.time() + 600  # 10 minutes for login
                     logged_in = self._looks_logged_in(page, platform)
                     if logged_in:
                         self._log(run, f"Already logged in to {platform} — saving session.")
@@ -296,7 +314,7 @@ class BotRunnerService:
                             break
                         time.sleep(3)
                     if not logged_in and not run.stop_requested:
-                        raise TimeoutError("Login timed out after 5 minutes.")
+                        raise TimeoutError("Login timed out after 10 minutes.")
 
                     if logged_in:
                         path = self._session_dir / f"{platform}_session.json"
@@ -311,9 +329,9 @@ class BotRunnerService:
                             db.close()
                         with self._lock:
                             run.submitted += 1
-                        self._log(run, f"{platform} session saved. Browser will stay open for 30 seconds for verification — then close automatically.")
-                        # Keep browser open for 30 seconds so user can verify login
-                        time.sleep(30)
+                        self._log(run, f"{platform} session saved. Browser will stay open for 60 seconds for verification — then close automatically.")
+                        # Keep browser open for 60 seconds so user can verify login
+                        time.sleep(60)
                     try:
                         context.close()
                     except Exception:
@@ -361,6 +379,7 @@ class BotRunnerService:
         job_title: str | None = None,
         job_company: str | None = None,
         max_jobs: int | None = None,
+        apply_mode: str | None = "top",
     ) -> dict:
         if not self._playwright_available():
             raise RuntimeError("Playwright not installed. Run: playwright install chromium")
@@ -384,7 +403,7 @@ class BotRunnerService:
 
         thread = threading.Thread(
             target=self._run,
-            args=(run, platform, continuous, batch_size, delay_sec, job_url, job_id, job_title, job_company, max_jobs),
+            args=(run, platform, continuous, batch_size, delay_sec, job_url, job_id, job_title, job_company, max_jobs, apply_mode),
             daemon=True,
             name=f"bot-{candidate_id}",
         )
@@ -443,6 +462,7 @@ class BotRunnerService:
         job_title: str | None,
         job_company: str | None,
         max_jobs: int | None = None,
+        apply_mode: str | None = "top",
     ) -> None:
         from app.agents.browser.runner import AutoApplyRunner
         from app.database.models import Candidate
@@ -514,6 +534,7 @@ class BotRunnerService:
                         debug=True,
                         stop_check=lambda: run.stop_requested,
                         max_jobs=max_jobs,
+                        apply_mode=apply_mode,
                     )
                 else:
                     runner.platform_run_until_stop(
@@ -527,6 +548,7 @@ class BotRunnerService:
                         max_rounds=None if continuous else 1,
                         stop_check=lambda: run.stop_requested,
                         max_jobs=max_jobs,
+                        apply_mode=apply_mode,
                     )
 
             with self._lock:
