@@ -49,8 +49,8 @@ COPY . .
 # Create storage directories
 RUN mkdir -p storage/resumes storage/generated storage/auto_apply storage/browser_sessions storage/faiss_index
 
-# Expose port
+# Expose port (Render injects $PORT at runtime)
 EXPOSE 8000
 
-# Run
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run — must listen on $PORT or Render health checks fail
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
