@@ -36,6 +36,7 @@ type Props = {
   candidateId: number;
   profile: any;
   onComplete: () => void;
+  onBack: () => void;
   loading: boolean;
   error: string;
   onError: (err: string) => void;
@@ -50,6 +51,7 @@ export function MatchStep({
   candidateId,
   profile,
   onComplete,
+  onBack,
   loading,
   error,
   onError,
@@ -283,11 +285,16 @@ export function MatchStep({
         </div>
       )}
 
-      {filteredMatches.length > 0 && (
-        <button onClick={onComplete} className="btn-dark w-full mt-6">
-          Review & Approve Applications →
+      <div className="flex gap-3 mt-6">
+        <button onClick={onBack} className="btn-outline flex-1">
+          ← Back to Platforms
         </button>
-      )}
+        {filteredMatches.length > 0 && (
+          <button onClick={onComplete} className="btn-dark flex-[2]">
+            Review & Approve Applications →
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -339,21 +339,41 @@ export default function HomePage() {
           </div>
 
           <div className="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {STEPS.map((s, i) => (
-              <div
-                key={s.id}
-                className={`progress-step ${
-                  ["upload", "platforms", "matches", "apply"].indexOf(step) > i
-                    ? "progress-step-done"
-                    : ["upload", "platforms", "matches", "apply"].indexOf(step) === i
-                      ? "progress-step-active"
-                      : ""
-                }`}
-              >
-                <span className="font-mono text-xs opacity-60">{String(i + 1).padStart(2, "0")}</span>
-                <span>{s.label}</span>
-              </div>
-            ))}
+            {STEPS.map((s, i) => {
+              const order = ["upload", "platforms", "matches", "apply"];
+              const active = order.indexOf(step) === i;
+              const done = order.indexOf(step) > i;
+              const locked = s.id !== "upload" && !candidateId;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  disabled={locked}
+                  title={locked ? "Upload a resume first" : `Go to ${s.label}`}
+                  onClick={() => {
+                    if (s.id !== "upload" && !candidateId) {
+                      setError("Upload a resume first, then switch steps.");
+                      return;
+                    }
+                    setError("");
+                    setStep(s.id as typeof step);
+                    document.getElementById("workspace")?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                  className={`progress-step text-left transition-colors ${
+                    done
+                      ? "progress-step-done cursor-pointer hover:opacity-80"
+                      : active
+                        ? "progress-step-active cursor-default"
+                        : locked
+                          ? "opacity-50 cursor-not-allowed"
+                          : "cursor-pointer hover:opacity-80"
+                  }`}
+                >
+                  <span className="font-mono text-xs opacity-60">{String(i + 1).padStart(2, "0")}</span>
+                  <span>{s.label}</span>
+                </button>
+              );
+            })}
           </div>
 
           {message && <div className="alert-success mt-6">{message}</div>}
@@ -403,6 +423,7 @@ export default function HomePage() {
                 remoteType={remoteType}
                 onRemoteTypeChange={setRemoteType}
                 onComplete={() => setStep("matches")}
+                onBack={() => setStep("upload")}
                 loading={loading}
                 error={error}
                 onError={setError}
@@ -415,6 +436,7 @@ export default function HomePage() {
                 candidateId={candidateId}
                 profile={profile}
                 onComplete={() => setStep("apply")}
+                onBack={() => setStep("platforms")}
                 loading={loading}
                 error={error}
                 onError={setError}
@@ -427,7 +449,12 @@ export default function HomePage() {
             )}
 
             {step === "apply" && candidateId && (
-              <AutoApplyStep candidateId={candidateId} loading={loading} error={error} />
+              <AutoApplyStep
+                candidateId={candidateId}
+                loading={loading}
+                error={error}
+                onBack={() => setStep("matches")}
+              />
             )}
           </div>
         </div>

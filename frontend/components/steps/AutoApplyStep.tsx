@@ -16,9 +16,10 @@ type Props = {
   candidateId: number;
   loading: boolean;
   error: string;
+  onBack: () => void;
 };
 
-export function AutoApplyStep({ candidateId, loading, error }: Props) {
+export function AutoApplyStep({ candidateId, loading, error, onBack }: Props) {
   const [config, setConfig] = useState<AutoApplyConfig | null>(null);
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [reviewQueue, setReviewQueue] = useState<MatchResult[]>([]);
@@ -82,11 +83,14 @@ export function AutoApplyStep({ candidateId, loading, error }: Props) {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold text-ink">Review & Approve</h1>
           <p className="text-ink-500">Review personalized applications before the bot applies</p>
         </div>
+        <button onClick={onBack} className="btn-outline text-sm">
+          ← Back to Matches
+        </button>
       </div>
 
       {error && <div className="alert-error mb-6">{error}</div>}

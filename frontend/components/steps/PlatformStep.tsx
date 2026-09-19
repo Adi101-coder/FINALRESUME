@@ -37,6 +37,7 @@ type Props = {
   remoteType: string;
   onRemoteTypeChange: (t: string) => void;
   onComplete: () => void;
+  onBack: () => void;
   loading: boolean;
   error: string;
   onError: (err: string) => void;
@@ -50,6 +51,7 @@ export function PlatformStep({
   remoteType,
   onRemoteTypeChange,
   onComplete,
+  onBack,
   loading,
   error,
   onError,
@@ -228,13 +230,18 @@ export function PlatformStep({
         </div>
       )}
 
-      <button
-        className="btn-dark w-full"
-        disabled={loading || selectedPlatforms.length === 0}
-        onClick={onComplete}
-      >
-        Continue to Matches →
-      </button>
+      <div className="flex gap-3">
+        <button className="btn-outline flex-1" onClick={onBack}>
+          ← Back
+        </button>
+        <button
+          className="btn-dark flex-[2]"
+          disabled={loading || selectedPlatforms.length === 0}
+          onClick={onComplete}
+        >
+          Continue to Matches →
+        </button>
+      </div>
     </div>
   );
 }
