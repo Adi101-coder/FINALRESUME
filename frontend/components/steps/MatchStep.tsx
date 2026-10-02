@@ -8,7 +8,6 @@ import {
   getAutoApplyConfig,
   getBotStatus,
   signalHumanReady,
-  type DiscoveryResult,
   type MatchResult,
 } from "@/lib/api";
 
@@ -36,6 +35,10 @@ type Props = {
   onSelectedChange: (p: string[]) => void;
   remoteType: string;
   onRemoteTypeChange: (t: string) => void;
+  searchLocation: string;
+  onSearchLocationChange: (v: string) => void;
+  allLocations: boolean;
+  onAllLocationsChange: (v: boolean) => void;
   onAddToQueue: (match: MatchResult) => void;
   onRemoveFromQueue: (jobId: number) => void;
   queuedJobIds: number[];
@@ -54,11 +57,14 @@ export function MatchStep({
   onSelectedChange,
   remoteType,
   onRemoteTypeChange,
+  searchLocation,
+  onSearchLocationChange,
+  allLocations,
+  onAllLocationsChange,
   onAddToQueue,
   onRemoveFromQueue,
   queuedJobIds,
 }: Props) {
-  const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [matches, setMatches] = useState<MatchResult[]>([]);
   const [discovering, setDiscovering] = useState(false);
   const [threshold, setThreshold] = useState(40);
@@ -155,9 +161,12 @@ export function MatchStep({
     setInfo("");
     try {
       const roleLabel = profile?.preferred_roles?.[0] || profile?.experience?.[0]?.role || profile?.skills?.slice(0, 2)?.join(", ") || "your profile";
-      setInfo(`Searching ${selectedPlatforms.join(", ")} for "${roleLabel}"…`);
-      const disc = await discoverJobs(candidateId, selectedPlatforms, remoteType || undefined, true);
-      setDiscovery(disc);
+      const locLabel = allLocations ? "all locations" : searchLocation.trim() || profile?.location || "your location";
+      setInfo(`Searching ${selectedPlatforms.join(", ")} for "${roleLabel}" in ${locLabel}…`);
+      const disc = await discoverJobs(candidateId, selectedPlatforms, remoteType || undefined, true, {
+        location: searchLocation,
+        allLocations,
+      });
       const results = await matchJobs(candidateId);
       setMatches(results);
       const total = disc.total_available ?? disc.candidate_jobs;
@@ -243,6 +252,45 @@ export function MatchStep({
             ))}
           </div>
         </div>
+        <div className="mt-4">
+          <p className="mb-2 text-sm font-medium text-ink">Search location</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={searchLocation}
+              onChange={(e) => onSearchLocationChange(e.target.value)}
+              disabled={allLocations}
+              placeholder="e.g. Bengaluru, India"
+              className="w-64 max-w-full rounded-xl border border-ink-200 bg-white px-3 py-1.5 text-xs text-ink-600 placeholder:text-ink-400 focus:border-ink focus:outline-none disabled:opacity-50"
+            />
+            <button
+              type="button"
+              onClick={() => onAllLocationsChange(!allLocations)}
+              className={`rounded-xl border px-3 py-1.5 text-xs font-medium ${
+                allLocations ? "border-ink bg-ink text-white" : "border-ink-200 bg-white text-ink-600"
+              }`}
+            >
+              🌍 All locations
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onAllLocationsChange(false);
+                onSearchLocationChange("");
+              }}
+              className="btn-outline text-xs"
+            >
+              Resume location
+            </button>
+          </div>
+          <p className="mt-1.5 text-xs text-ink-400">
+            {allLocations
+              ? "Worldwide search — location filter off."
+              : searchLocation.trim()
+                ? `Searching in ${searchLocation.trim()} (job search only).`
+                : "Using the location from your resume."}
+          </p>
+        </div>
         {loginPlatform && (
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
             <p className="font-medium">Logging in to {loginPlatform}… finish in the browser window. You stay here.</p>
@@ -250,22 +298,6 @@ export function MatchStep({
           </div>
         )}
       </div>
-
-      {discovery && (
-        <div className="mb-6 rounded-xl border border-ink-200 bg-ink-50 p-4">
-          <p className="font-semibold text-ink">
-            {discovery.total_available ?? discovery.candidate_jobs} live jobs for “{discovery.role ?? "your role"}”
-          </p>
-          <p className="text-sm text-ink-500 mt-1">
-            {Object.entries(discovery.platform_counts ?? {})
-              .map(([p, c]: any) => `${p}: ${c.available} available (${c.fetched} fetched${c.errors ? ` · ${c.errors} error` : ""})`)
-              .join(" · ")}
-          </p>
-          {(discovery.search_queries ?? []).length > 0 && (
-            <p className="mt-1 text-xs text-ink-400">Queries: {(discovery.search_queries ?? []).slice(0, 5).join(" · ")}</p>
-          )}
-        </div>
-      )}
 
       <div className="mb-6">
         <label className="block text-sm font-medium text-ink mb-2">

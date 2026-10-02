@@ -169,8 +169,14 @@ async def discover_jobs_for_candidate(
     sources: list[str] | None = None,
     remote_type: str | None = None,
     fresh: bool = True,
+    location: str | None = None,
+    all_locations: bool = False,
 ) -> dict:
     """Live discovery for the candidate's role — no stored/static pool reuse.
+
+    Location resolution (search only): all_locations=True → worldwide;
+    a non-empty `location` → search in that preferred location instead of
+    the resume's location; otherwise fall back to the resume location.
 
     When fresh=True (default), previous CandidateJob links for this candidate
     are cleared first so `candidate_jobs` and `platform_counts` reflect ONLY
@@ -186,13 +192,28 @@ async def discover_jobs_for_candidate(
 
     profile = CandidateProfile.model_validate(candidate.profile_json)
     queries = build_search_queries(profile.model_dump())
-    # Location often comes back as "Name\nCity" from bad parsing — keep only last line / city part
-    raw_loc = (profile.location or "").replace("\r", "\n")
-    if "\n" in raw_loc:
-        raw_loc = [p.strip() for p in raw_loc.split("\n") if p.strip()][-1]
-    location_hint = " ".join(raw_loc.split())[:80]
 
-    step("BUILD_QUERIES", count=len(queries), queries=",".join(queries[:8]))
+    if all_locations:
+        location_hint = ""
+        location_mode = "all"
+    elif location and location.strip():
+        location_hint = " ".join(location.replace("\r", " ").split())[:80]
+        location_mode = "preferred"
+    else:
+        # Location often comes back as "Name\nCity" from bad parsing — keep only last line / city part
+        raw_loc = (profile.location or "").replace("\r", "\n")
+        if "\n" in raw_loc:
+            raw_loc = [p.strip() for p in raw_loc.split("\n") if p.strip()][-1]
+        location_hint = " ".join(raw_loc.split())[:80]
+        location_mode = "resume"
+
+    step(
+        "BUILD_QUERIES",
+        count=len(queries),
+        queries=",".join(queries[:8]),
+        location=location_hint or "all locations",
+        location_mode=location_mode,
+    )
     scrapers = build_scrapers()
 
     if sources:
@@ -383,6 +404,8 @@ async def discover_jobs_for_candidate(
         "candidate_id": candidate_id,
         "role": role,
         "search_queries": queries,
+        "search_location": location_hint or "All locations",
+        "location_mode": location_mode,
         "scraped": len(scraped),
         "created": created,
         "skipped_duplicates": skipped,

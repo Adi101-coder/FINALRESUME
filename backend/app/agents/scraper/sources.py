@@ -554,10 +554,13 @@ class LinkedInScraper(BaseJobScraper):
             async with httpx.AsyncClient(timeout=30.0) as client:
                 for page in range(max_pages):
                     keywords = quote_plus(query or "software engineer")
-                    loc = quote_plus(location or "Remote")
+                    clean = " ".join((location or "").split())
+                    loc = quote_plus(clean)
+                    # Empty location = worldwide search (no location filter).
                     url = (
                         "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-                        f"?keywords={keywords}&location={loc}&start={page * page_size}&f_AL=true"
+                        f"?keywords={keywords}&start={page * page_size}&f_AL=true"
+                        + (f"&location={loc}" if loc else "")
                     )
                     html = await _get_text_retry(client, url, headers=headers)
                     if page == 0:
@@ -578,7 +581,7 @@ class LinkedInScraper(BaseJobScraper):
                         loc_el = card.select_one("span.job-search-card__location")
                         title = title_el.get_text(strip=True)
                         company = company_el.get_text(strip=True) if company_el else "LinkedIn Employer"
-                        loc_text = loc_el.get_text(strip=True) if loc_el else (location or "Remote")
+                        loc_text = loc_el.get_text(strip=True) if loc_el else (location.strip() or "Worldwide")
                         href = link_el.get("href", "")
                         apply_url = href.split("?")[0] if href.startswith("http") else f"https://www.linkedin.com{href}"
                         if apply_url in seen_urls:

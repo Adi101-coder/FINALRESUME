@@ -120,6 +120,8 @@ export type DiscoveryResult = {
   candidate_id: number;
   role?: string;
   search_queries: string[];
+  search_location?: string;
+  location_mode?: "all" | "preferred" | "resume";
   scraped: number;
   created: number;
   skipped_duplicates: number;
@@ -192,6 +194,7 @@ export async function discoverJobs(
   platforms?: string[],
   remoteType?: string,
   fresh = true,
+  opts?: { location?: string; allLocations?: boolean },
 ) {
   logClick("discover_jobs", "profile-based discovery", { candidateId });
   const params = new URLSearchParams();
@@ -200,6 +203,11 @@ export async function discoverJobs(
   }
   if (remoteType) {
     params.set("remote_type", remoteType);
+  }
+  if (opts?.allLocations) {
+    params.set("all_locations", "true");
+  } else if (opts?.location?.trim()) {
+    params.set("location", opts.location.trim());
   }
   params.set("fresh", fresh ? "true" : "false");
   const qs = params.toString();

@@ -65,6 +65,8 @@ export default function HomePage() {
   const [loading, setLoading] = useState(false);
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(["linkedin"]);
   const [remoteType, setRemoteType] = useState<string>("");
+  const [searchLocation, setSearchLocation] = useState<string>("");
+  const [allLocations, setAllLocations] = useState<boolean>(false);
   const [reviewQueue, setReviewQueue] = useState<MatchResult[]>([]);
 
   const [storedId, setStoredId] = useState<number | null>(null);
@@ -457,6 +459,10 @@ export default function HomePage() {
                 onSelectedChange={setSelectedPlatforms}
                 remoteType={remoteType}
                 onRemoteTypeChange={setRemoteType}
+                searchLocation={searchLocation}
+                onSearchLocationChange={setSearchLocation}
+                allLocations={allLocations}
+                onAllLocationsChange={setAllLocations}
                 onAddToQueue={handleAddToQueue}
                 onRemoveFromQueue={handleRemoveFromQueue}
                 queuedJobIds={reviewQueue.map((m) => m.job_id)}

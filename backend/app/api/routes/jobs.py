@@ -54,6 +54,8 @@ async def discover_jobs(
     sources: str | None = Query(default=None, description="Comma-separated list of sources to scrape"),
     remote_type: str | None = Query(default=None, description="Filter: remote, onsite, hybrid"),
     fresh: bool = Query(default=True, description="Clear previous pool links so counts are live-only for this run"),
+    location: str | None = Query(default=None, description="Preferred search location (overrides resume location)"),
+    all_locations: bool = Query(default=False, description="Search all locations (worldwide)"),
     db: Session = Depends(get_db),
 ):
     from app.database.models import Candidate
@@ -62,7 +64,15 @@ async def discover_jobs(
         raise HTTPException(status_code=404, detail="Candidate not found.")
     try:
         source_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
-        result = await discover_jobs_for_candidate(db, candidate_id, sources=source_list, remote_type=remote_type, fresh=fresh)
+        result = await discover_jobs_for_candidate(
+            db,
+            candidate_id,
+            sources=source_list,
+            remote_type=remote_type,
+            fresh=fresh,
+            location=location,
+            all_locations=all_locations,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
