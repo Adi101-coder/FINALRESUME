@@ -69,6 +69,146 @@ def _try_fill(locator: Locator, value: str) -> bool:
         return False
 
 
+def _profile_years(profile: dict) -> int:
+    return max(len(profile.get("experience") or []), 2)
+
+
+def repair_invalid_fields(page: Page, profile: dict, modal: Locator | None = None) -> tuple[int, int]:
+    """Fix fields LinkedIn's constraint validation rejects.
+
+    Returns (fixed, still_invalid). Called before every Next/Review click so a
+    bad value (stale draft text, wrong characters, out-of-range number) never
+    blocks the modal from advancing. Uses native el.validity so we repair
+    exactly what LinkedIn is complaining about.
+    """
+    years = _profile_years(profile)
+    scope = modal if modal is not None else page.locator(
+        "dialog, .jobs-easy-apply-modal, div[role='dialog']"
+    )
+    fields = scope.locator("input, textarea, select")
+    fixed = remaining = 0
+    try:
+        count = min(fields.count(), 50)
+    except Exception:
+        return 0, 0
+
+    for i in range(count):
+        el = fields.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            state = el.evaluate(
+                """el => ({
+                    invalid: !el.validity.valid,
+                    valueMissing: !!el.validity.valueMissing,
+                    rangeUnderflow: !!el.validity.rangeUnderflow,
+                    rangeOverflow: !!el.validity.rangeOverflow,
+                    tag: el.tagName.toLowerCase(),
+                    type: (el.type || '').toLowerCase(),
+                    value: el.value || '',
+                    pattern: el.getAttribute('pattern') || '',
+                    min: el.min || '',
+                    max: el.max || '',
+                    label: (((el.labels && el.labels[0]) ? el.labels[0].innerText : '')
+                        + ' ' + (el.getAttribute('aria-label') || '')
+                        + ' ' + (el.placeholder || '')).trim(),
+                })"""
+            )
+        except Exception:
+            continue
+        if not state["invalid"]:
+            continue
+
+        tag, typ = state["tag"], state["type"]
+        hint = (state["label"] or "").lower()
+        try:
+            if tag == "select" and state["valueMissing"]:
+                el.select_option(index=1)
+                fixed += 1
+                continue
+            if typ in ("radio", "checkbox"):
+                if state["valueMissing"]:
+                    name = el.get_attribute("name") or ""
+                    opts = (
+                        page.locator(f"input[name='{name}']")
+                        if name
+                        else el.locator("xpath=ancestor::fieldset[1]//input")
+                    )
+                    for j in range(min(opts.count(), 6)):
+                        cand = opts.nth(j)
+                        if cand.is_visible() and cand.is_enabled():
+                            cand.check()
+                            break
+                    fixed += 1
+                continue
+
+            new_value: str | None = None
+            if state["valueMissing"]:
+                if "year" in hint or "how many" in hint:
+                    new_value = str(years)
+                elif "city" in hint or "location" in hint:
+                    new_value = clean_location(profile)
+                elif typ == "email" or "email" in hint:
+                    new_value = profile.get("email", "")
+                elif any(k in hint for k in ("linkedin", "github", "portfolio", "website")):
+                    new_value = (
+                        profile.get("linkedin")
+                        or profile.get("github")
+                        or profile.get("portfolio")
+                        or ""
+                    )
+                elif any(k in hint for k in ("why", "describe", "tell us", "interested", "motivat", "cover")):
+                    new_value = (
+                        "I'm a strong match for this role and my resume has further detail. "
+                        "I'd welcome the chance to contribute quickly."
+                    )
+            elif state["rangeUnderflow"]:
+                try:
+                    new_value = str(int(float(state["min"] or years)))
+                except ValueError:
+                    new_value = str(years)
+            elif state["rangeOverflow"]:
+                try:
+                    new_value = str(int(float(state["max"] or years)))
+                except ValueError:
+                    new_value = str(years)
+            else:
+                digits = re.sub(r"\D", "", state["value"])
+                if digits:
+                    new_value = digits
+                elif "year" in hint:
+                    new_value = str(years)
+                else:
+                    cleaned = re.sub(r"[^\w @.:/+#-]", "", state["value"]).strip()
+                    new_value = cleaned or None
+
+            if not new_value:
+                remaining += 1
+                logger.warning(
+                    "Invalid field not auto-fixable: label=%r value=%r pattern=%r min=%r max=%r",
+                    state["label"], state["value"], state["pattern"], state["min"], state["max"],
+                )
+                continue
+
+            el.fill(new_value)
+            el.press("Tab")
+            still = el.evaluate("el => !el.validity.valid")
+            if still:
+                remaining += 1
+                logger.warning(
+                    "Field still invalid after repair: label=%r value=%r pattern=%r min=%r max=%r",
+                    state["label"], new_value, state["pattern"], state["min"], state["max"],
+                )
+            else:
+                fixed += 1
+                logger.info("Repaired invalid field %r -> %r", state["label"][:60], new_value)
+        except Exception as exc:
+            remaining += 1
+            logger.debug("Repair failed for %r: %s", state["label"], exc)
+
+    return fixed, remaining
+
+
 def fill_standard_fields(page: Page, profile: dict) -> int:
     """Fill common application fields. Returns count of fields filled."""
     filled = 0
@@ -142,8 +282,7 @@ def fill_custom_questions(page: Page, profile: dict) -> int:
     """Fill common screening questions (work auth, sponsorship, experience)."""
     filled = 0
     skills = profile.get("skills") or []
-    experience = profile.get("experience") or []
-    years = max(len(experience), 2)
+    years = _profile_years(profile)
 
     qa_pairs: list[tuple[str, str]] = [
         (r"authorized|legally authorized|eligible to work|work authorization", "Yes"),
@@ -168,11 +307,19 @@ def fill_custom_questions(page: Page, profile: dict) -> int:
         try:
             loc = page.get_by_label(re.compile(pattern, re.I))
             if loc.count() > 0:
-                tag = loc.first.evaluate("el => el.tagName.toLowerCase()")
+                target = loc.first
+                tag = target.evaluate("el => el.tagName.toLowerCase()")
+                lab = target.evaluate(
+                    "el => (((el.labels && el.labels[0]) ? el.labels[0].innerText : '')"
+                    " + ' ' + (el.getAttribute('aria-label') || '')).trim()"
+                )
+                effective = answer
+                if answer == "Yes" and re.search(r"year|how many", lab, re.I):
+                    effective = str(years)
                 if tag == "select":
-                    loc.first.select_option(label=re.compile(answer, re.I))
+                    target.select_option(label=re.compile(effective, re.I))
                     filled += 1
-                elif _try_fill(loc, answer):
+                elif _try_fill(target, effective):
                     filled += 1
         except Exception:
             pass

@@ -61,7 +61,7 @@ export function MatchStep({
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [matches, setMatches] = useState<MatchResult[]>([]);
   const [discovering, setDiscovering] = useState(false);
-  const [threshold, setThreshold] = useState(60);
+  const [threshold, setThreshold] = useState(40);
   const [sessions, setSessions] = useState<any[] | null>(null);
   const [loginPlatform, setLoginPlatform] = useState<string | null>(null);
   const [info, setInfo] = useState("");
@@ -273,7 +273,7 @@ export function MatchStep({
         </label>
         <input
           type="range"
-          min="50"
+          min="20"
           max="95"
           step="5"
           value={threshold}
@@ -333,6 +333,7 @@ function MatchCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const scoreBreakdown = [
+    { label: "Relevance", score: match.relevance_score ?? 0, color: "bg-rose-500" },
     { label: "Skills", score: match.skills_score, color: "bg-green-500" },
     { label: "Experience", score: match.experience_score, color: "bg-blue-500" },
     { label: "Embedding Fit", score: match.embedding_score, color: "bg-purple-500" },
@@ -383,15 +384,18 @@ function MatchCard({
       {expanded && (
         <div className="mt-4 pt-4 border-t border-ink-100">
           <div className="space-y-3">
-            {scoreBreakdown.map((s) => (
-              <div key={s.label} className="flex items-center gap-3">
-                <span className="w-24 text-sm text-ink-600">{s.label}</span>
-                <div className="flex-1 h-2 bg-ink-100 rounded-full overflow-hidden">
-                  <div className={`h-full ${s.color} rounded-full`} style={{ width: `${s.score}%` }} />
+            {scoreBreakdown.map((s) => {
+              const pct = Math.min(100, Math.max(0, Math.round(s.score)));
+              return (
+                <div key={s.label} className="flex items-center gap-3">
+                  <span className="w-24 text-sm text-ink-600">{s.label}</span>
+                  <div className="flex-1 h-2 bg-ink-100 rounded-full overflow-hidden">
+                    <div className={`h-full ${s.color} rounded-full`} style={{ width: `${pct}%` }} />
+                  </div>
+                  <span className="w-10 text-sm font-mono text-ink">{pct}%</span>
                 </div>
-                <span className="w-10 text-sm font-mono text-ink">{s.score}%</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

@@ -233,7 +233,7 @@ class BotRunnerService:
         from playwright.sync_api import sync_playwright
 
         from app.agents.browser.captcha import human_signaled
-        from app.agents.browser.runner import open_system_chrome_context
+        from app.agents.browser.runner import default_headless, open_system_chrome_context
 
         login_url = self.LOGIN_URLS[platform]
         self._log(
@@ -253,7 +253,7 @@ class BotRunnerService:
                     # Fallback: fresh window with manual login (old behavior).
                     self._log(run, f"{exc} Opening a separate login window instead.", level="warning")
                     browser = pw.chromium.launch(
-                        headless=False,
+                        headless=default_headless(),
                         slow_mo=80,
                         ignore_default_args=["--enable-automation"],
                         args=["--disable-blink-features=AutomationControlled"],
@@ -461,7 +461,7 @@ class BotRunnerService:
         apply_mode: str | None = "top",
         jobs: list[dict] | None = None,
     ) -> None:
-        from app.agents.browser.runner import AutoApplyRunner
+        from app.agents.browser.runner import AutoApplyRunner, default_headless
         from app.database.models import Candidate
 
         db = SessionLocal()
@@ -507,7 +507,7 @@ class BotRunnerService:
         try:
             with AutoApplyRunner(
                 session_dir=self._session_dir,
-                headless=False,
+                headless=default_headless(),
                 slow_mo_ms=80,
                 candidate_id=run.candidate_id,
                 db=SessionLocal(),

@@ -36,18 +36,21 @@ class MatchingEngine:
         description = job.get("description", "").lower()
 
         terms = self._profile_terms(profile_data)
-        relevance_score = self._relevance_score(terms, job, job_skills)
-        skills_score = self._skills_score(profile_skills, job_skills, profile_text, description)
-        experience_score = self._experience_score(profile_data, job)
-        location_score = self._location_score(profile_data.get("location", ""), job.get("location", ""))
-        embedding_score = self._embedding_score(profile_data, job, profile_vec=profile_vec)
+        relevance_score = min(100.0, self._relevance_score(terms, job, job_skills))
+        skills_score = min(100.0, self._skills_score(profile_skills, job_skills, profile_text, description))
+        experience_score = min(100.0, self._experience_score(profile_data, job))
+        location_score = min(100.0, self._location_score(profile_data.get("location", ""), job.get("location", "")))
+        embedding_score = min(100.0, self._embedding_score(profile_data, job, profile_vec=profile_vec))
 
         final = round(
-            relevance_score * 0.50
-            + skills_score * 0.15
-            + experience_score * 0.15
-            + embedding_score * 0.15
-            + location_score * 0.05,
+            min(
+                100.0,
+                relevance_score * 0.50
+                + skills_score * 0.15
+                + experience_score * 0.15
+                + embedding_score * 0.15
+                + location_score * 0.05,
+            ),
             1,
         )
 
@@ -66,6 +69,7 @@ class MatchingEngine:
 
         return {
             "score": final,
+            "relevance_score": round(relevance_score, 1),
             "skills_score": round(skills_score, 1),
             "experience_score": round(experience_score, 1),
             "embedding_score": round(embedding_score, 1),
@@ -136,13 +140,13 @@ class MatchingEngine:
     ) -> float:
         if not job_skills:
             overlap = sum(1 for token in description.split() if token in profile_text)
-            return min(100.0, overlap / max(len(set(description.split())), 1) * 150) + 20
+            return min(100.0, min(100.0, overlap / max(len(set(description.split())), 1) * 150) + 20)
 
         matched = 0
         for skill in job_skills:
             if skill in profile_skills or skill in profile_text:
                 matched += 1
-        return (matched / max(len(job_skills), 1)) * 100 + 15
+        return min(100.0, (matched / max(len(job_skills), 1)) * 100 + 15)
 
     def _experience_score(self, profile: dict, job: dict) -> float:
         """Blend resume-experience relevance with the job's seniority requirement."""

@@ -13,7 +13,12 @@ from typing import Callable
 from playwright.sync_api import Locator, Page
 
 from app.agents.browser.captcha import captcha_present, wait_for_human
-from app.agents.browser.forms import fill_custom_questions, fill_standard_fields, upload_resume
+from app.agents.browser.forms import (
+    fill_custom_questions,
+    fill_standard_fields,
+    repair_invalid_fields,
+    upload_resume,
+)
 
 logger = logging.getLogger("app.browser.linkedin")
 
@@ -33,6 +38,25 @@ MODAL_NEXT = (
 )
 MODAL_SUBMIT = (r"submit application", r"submit", r"send application")
 MODAL_DONE = (r"^done$", r"^close$", r"not now", r"no thanks", r"dismiss")
+
+
+def _goto_with_retry(page: Page, url: str, *, timeout: int = 300_000, attempts: int = 3) -> None:
+    """Navigate with retries — LinkedIn intermittently aborts navigations (ERR_ABORTED)."""
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            return
+        except Exception as exc:
+            last = exc
+            msg = str(exc)
+            retryable = "ERR_ABORTED" in msg or "Timeout" in msg or "net::" in msg
+            if not retryable:
+                raise
+            logger.warning("Navigation attempt %d/%d failed: %s", attempt, attempts, msg.splitlines()[0])
+            if attempt < attempts:
+                page.wait_for_timeout(2500)
+    raise last  # type: ignore[misc]
 
 # Apply button selectors inside the job details panel (priority order)
 APPLY_BUTTON_SELECTORS = (
@@ -190,6 +214,12 @@ def already_applied(page: Page) -> bool:
                 return True
         except Exception:
             continue
+    try:
+        panel_text = (details.inner_text() or "").lower()
+        if re.search(r"application (submitted|sent|status)|you applied", panel_text):
+            return True
+    except Exception:
+        pass
     return False
 
 
@@ -282,6 +312,8 @@ def click_easy_apply(page: Page, *, debug: bool = False) -> bool:
     # Playwright role-based attempts inside details panel
     role_attempts = (
         details.locator("button").filter(has_text=re.compile(r"easy apply", re.I)),
+        # Saved draft: LinkedIn swaps the apply button for "Continue".
+        details.locator("button").filter(has_text=re.compile(r"^continue$", re.I)),
         page.locator("button").filter(has_text=re.compile(r"easy apply", re.I)),
         details.get_by_role("button", name=re.compile(r"easy apply", re.I)),
         details.get_by_role("button", name=re.compile(r"^apply$", re.I)),
@@ -312,6 +344,11 @@ def click_easy_apply(page: Page, *, debug: bool = False) -> bool:
         page.wait_for_timeout(1500)
         if _modal_visible(page):
             return True
+
+    # Last chance: one of the clicks above may have opened a slow-rendering modal.
+    if _wait_for_modal(page, 5000):
+        logger.info("Easy Apply modal appeared after delayed render")
+        return True
 
     if debug:
         print(f"  [debug] Could not click Easy Apply. Visible: {_debug_buttons(details)}")
@@ -367,6 +404,35 @@ def _modal_visible(page: Page) -> bool:
         return False
 
 
+def _wait_for_modal(page: Page, timeout_ms: int = 6000) -> bool:
+    """Poll until the Easy Apply modal appears (page renders slowly under load)."""
+    waited = 0
+    while waited < timeout_ms:
+        if _modal_visible(page):
+            return True
+        page.wait_for_timeout(400)
+        waited += 400
+    return _modal_visible(page)
+
+
+_SUBMISSION_PHRASES = ("application sent", "application submitted", "your application was sent", "application status")
+
+
+def _submission_confirmed(page: Page, modal_text: str = "") -> bool:
+    """True when LinkedIn confirms the application — checked in the modal first,
+    then on the page itself (after Submit the modal closes and the job page
+    shows 'Application status: Application submitted')."""
+    if any(p in (modal_text or "").lower() for p in _SUBMISSION_PHRASES):
+        return True
+    try:
+        if _modal_visible(page):
+            return False
+        page_text = (page.inner_text("body") or "").lower()
+        return any(p in page_text for p in _SUBMISSION_PHRASES)
+    except Exception:
+        return False
+
+
 def _dismiss_blocking_overlays(page: Page) -> None:
     # NOTE: never match dismiss/close here — that is the Easy Apply modal's own X,
     # which opens LinkedIn's "Save this application?" dialog and breaks the run.
@@ -403,6 +469,16 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         return APPLY_RESULT_UNSUPPORTED
 
     modal = _easy_apply_modal(page)
+    try:
+        preview = (modal.inner_text() or "")[:240].replace("\n", " | ")
+        logger.info(
+            "Modal walk start: visible=%s buttons=[%s] body=%r",
+            _modal_visible(page),
+            _debug_buttons(modal),
+            preview,
+        )
+    except Exception as exc:
+        logger.info("Modal walk start: cannot read modal (%s)", exc)
     last_step_sig = ""
     same_step_count = 0
     human_assisted = False
@@ -418,6 +494,23 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         fill_custom_questions(page, profile)
         upload_resume(page, resume_path)
 
+        # LinkedIn blocks Next/Review while any field fails constraint
+        # validation (stale draft text, bad characters, out-of-range number).
+        fixed, invalid = repair_invalid_fields(page, profile, modal)
+        if fixed:
+            logger.info("Repaired %d invalid modal fields", fixed)
+            page.wait_for_timeout(400)
+        if invalid and not human_assisted:
+            human_assisted = True
+            try:
+                wait_for_human(
+                    page,
+                    "LinkedIn: fix the highlighted question in the Easy Apply modal, then press ENTER.",
+                    timeout_sec=150,
+                )
+            except TimeoutError:
+                return _review_with_screenshot(page)
+
         body = ""
         try:
             body = (modal.inner_text() or "").lower()
@@ -426,13 +519,11 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
 
         if _save_dialog_visible(page):
             # The modal X was hit at some point — clean up and let the run continue.
+            logger.info("Save-draft dialog detected — discarding")
             _click_by_patterns(page, (r"^discard$",))
             return _review_with_screenshot(page)
 
-        if any(
-            phrase in body
-            for phrase in ("application sent", "application submitted", "your application was sent")
-        ):
+        if _submission_confirmed(page, body):
             _click_by_patterns(page, MODAL_DONE, scope=modal)
             return APPLY_RESULT_SUBMITTED
 
@@ -441,6 +532,7 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         for aria in ("Continue to next step", "Review your application", "Submit application", "Submit"):
             btn = modal.locator(f'button[aria-label="{aria}" i]')
             if _click_locator(btn):
+                logger.info("Clicked aria-label %r", aria)
                 page.wait_for_timeout(2000)
                 break
         else:
@@ -455,6 +547,13 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
                 if step_sig == last_step_sig:
                     same_step_count += 1
                     if same_step_count >= 2:
+                        if _submission_confirmed(page, body):
+                            return APPLY_RESULT_SUBMITTED
+                        logger.info(
+                            "No progress after %d identical steps (body_empty=%s) — bailing",
+                            same_step_count + 1,
+                            not body,
+                        )
                         if human_assisted or not captcha_present(page):
                             # Can't make progress — skip this job, keep the run going.
                             return _review_with_screenshot(page)
@@ -474,14 +573,11 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
 
         try:
             body = (modal.inner_text() or "").lower()
-            if any(
-                phrase in body
-                for phrase in ("application sent", "application submitted", "your application was sent")
-            ):
-                _click_by_patterns(page, MODAL_DONE, scope=modal)
-                return APPLY_RESULT_SUBMITTED
         except Exception:
-            pass
+            body = ""
+        if _submission_confirmed(page, body):
+            _click_by_patterns(page, MODAL_DONE, scope=modal)
+            return APPLY_RESULT_SUBMITTED
 
         _dismiss_blocking_overlays(page)
         page.wait_for_timeout(800)
@@ -588,12 +684,12 @@ def apply_linkedin_from_search(
     url = _search_url(query, location, start=start_offset)
 
     logger.info("LinkedIn search batch: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
+    _goto_with_retry(page, url)
     page.wait_for_timeout(3000)
 
     if "/login" in page.url or "authwall" in page.url:
         wait_for_human(page, "LinkedIn: log in in the browser, then press ENTER.")
-        page.goto(url, wait_until="domcontentloaded", timeout=300_000)
+        _goto_with_retry(page, url)
         page.wait_for_timeout(2500)
 
     if captcha_present(page):
@@ -731,7 +827,7 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
     from app.agents.browser.platform_handlers import ApplyOutcome
 
     logger.info("LinkedIn job page apply: %s", url)
-    page.goto(url, wait_until="domcontentloaded", timeout=300_000)
+    _goto_with_retry(page, url)
     page.wait_for_timeout(3500)
 
     if captcha_present(page):
@@ -739,7 +835,7 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
 
     if "/login" in page.url or "authwall" in page.url:
         wait_for_human(page, "LinkedIn: log in manually, then press ENTER.")
-        page.goto(url, wait_until="domcontentloaded", timeout=300_000)
+        _goto_with_retry(page, url)
         page.wait_for_timeout(3000)
 
     if already_applied(page):
@@ -747,6 +843,14 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
 
     if not click_easy_apply(page, debug=debug):
         details = _job_details_panel(page)
+        debug_dir = Path("storage/browser_sessions/debug")
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        shot = debug_dir / f"no_easy_apply_{int(time.time())}.png"
+        try:
+            page.screenshot(path=str(shot), full_page=False)
+            logger.info("No-Easy-Apply screenshot: %s (url=%s)", shot, page.url)
+        except Exception:
+            pass
         return ApplyOutcome(
             APPLY_RESULT_UNSUPPORTED,
             _no_apply_reason(page, details),

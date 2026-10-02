@@ -25,6 +25,16 @@ logger = logging.getLogger("app.browser.runner")
 
 DEFAULT_SESSION_DIR = Path("storage/browser_sessions")
 
+
+def default_headless() -> bool:
+    """Headless mode on servers (Linux without a display, e.g. Render).
+
+    Desktop platforms keep the visible browser so the user can watch/solve CAPTCHAs.
+    """
+    import os
+
+    return sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
+
 BOARD_CONFIGS = {
     "indeed": INDEED_CONFIG,
     "ziprecruiter": ZIPRECRUITER_CONFIG,
@@ -101,7 +111,7 @@ def get_available_browser_contexts(pw) -> list[tuple[str, callable]]:
             return pw.chromium.launch_persistent_context(
                 str(chrome_dir),
                 channel="chrome",
-                headless=False,
+                headless=default_headless(),
                 slow_mo=80,
                 viewport=vp or {"width": 1400, "height": 900},
                 ignore_default_args=["--enable-automation"],
@@ -112,7 +122,7 @@ def get_available_browser_contexts(pw) -> list[tuple[str, callable]]:
     # 2. Try Chrome without persistent context (fresh)
     def chrome_fresh(vp=None):
         return pw.chromium.launch(
-            headless=False,
+            headless=default_headless(),
             slow_mo=80,
             ignore_default_args=["--enable-automation"],
             args=["--disable-blink-features=AutomationControlled"],
@@ -138,7 +148,7 @@ def get_available_browser_contexts(pw) -> list[tuple[str, callable]]:
                         break
             return pw.firefox.launch_persistent_context(
                 str(profile_dir),
-                headless=False,
+                headless=default_headless(),
                 slow_mo=80,
                 viewport=vp or {"width": 1400, "height": 900},
             )
@@ -149,7 +159,7 @@ def get_available_browser_contexts(pw) -> list[tuple[str, callable]]:
         try:
             def safari_context(vp=None):
                 return pw.webkit.launch(
-                    headless=False,
+                    headless=default_headless(),
                     slow_mo=80,
                     viewport=vp or {"width": 1400, "height": 900},
                 )

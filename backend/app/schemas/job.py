@@ -35,6 +35,7 @@ class MatchResult(BaseModel):
     location: str
     apply_url: str
     score: float
+    relevance_score: float = 0.0
     skills_score: float
     experience_score: float
     embedding_score: float

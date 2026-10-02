@@ -93,6 +93,7 @@ export type MatchResult = {
   location: string;
   apply_url: string;
   score: number;
+  relevance_score: number;
   skills_score: number;
   experience_score: number;
   embedding_score: number;

@@ -32,7 +32,16 @@ def _parse_year(value) -> int | None:
 
 
 def _is_present(value) -> bool:
-    return str(value or "").strip().lower() in {"present", "current", "now", "ongoing"}
+    return str(value or "").strip().lower() in {
+        "present",
+        "current",
+        "now",
+        "ongoing",
+        "till date",
+        "till now",
+        "present day",
+        "continue",
+    }
 
 
 def estimate_experience_years(profile: dict) -> float | None:
@@ -50,16 +59,31 @@ def estimate_experience_years(profile: dict) -> float | None:
         bullets = exp.get("bullets") or []
         if not title and not bullets:
             continue
-        # Ignore parsed noise rows (bullet fragments stored as company/role)
-        if str(exp.get("company") or "").lstrip("•- ").lower().startswith(("conducted", "audit", "engineer", "develop", "implement", "utiliz")):
+        # Ignore parsed noise: bullet fragments stored as company/role entries.
+        company_l = str(exp.get("company") or "").strip().lower().rstrip(":").lstrip("•- *")
+        if company_l.startswith(("conducted", "audit", "engineer", "develop", "implement", "utiliz", "built", "created", "designed", "deployed", "trained")):
             continue
+        # Section headers ("EXPERIENCE") often carry the first role's dates — keep
+        # the dates but never treat the header itself as a role.
+        is_header = company_l in {
+            "experience",
+            "work experience",
+            "employment",
+            "work history",
+            "professional experience",
+            "career",
+            "projects",
+            "personal projects",
+        }
         start = _parse_year(exp.get("start_date"))
         end_present = _is_present(exp.get("end_date")) or _is_present(exp.get("start_date"))
         end = _parse_year(exp.get("end_date"))
-        if start:
+        if start and not is_header:
             saw_experience = True
+        if start:
             if end and end >= start:
-                spans.append(end - start + (1 if end == today.year else 0))
+                span = end - start + (1 if end >= today.year else 0)
+                spans.append(max(1, span))
             elif end_present:
                 spans.append(max(1, today.year - start + (1 if today.month >= 7 else 0)))
 
@@ -114,17 +138,25 @@ def is_overqualified(job: dict, years: float | None) -> bool:
     """True when the job clearly asks for far more experience than the resume has."""
     if years is None:
         return False
+    title = str(job.get("title") or "")
     req = job_required_years(job)
     if req is not None and req > years + 2:
         return True
-    level = title_seniority(str(job.get("title") or ""))
+    level = title_seniority(title)
     if level == "senior":
         if years < 0.5:
             return True
-        if years < 2 and re.search(r"\b(manager|director|head|chief|vp|principal)\b", str(job.get("title") or ""), re.I):
+        if years < 2 and re.search(r"\b(manager|director|head|chief|vp|principal)\b", title, re.I):
             return True
+    # Experienced candidates should not be shown fresher/intern roles.
+    if years >= 4 and re.search(
+        r"\b(intern(ship)?|trainee|fresher|entry[\s-]?level|junior|jr\.?|graduate)\b",
+        title,
+        re.I,
+    ):
+        return True
     # Academic / PhD-gated roles are not open to freshers.
-    if years < 2 and re.search(r"\b(professor|lecturer|faculty|ph\.?d)\b", str(job.get("title") or ""), re.I):
+    if years < 2 and re.search(r"\b(professor|lecturer|faculty|ph\.?d)\b", title, re.I):
         return True
     return False
 

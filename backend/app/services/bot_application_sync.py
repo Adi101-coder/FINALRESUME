@@ -111,7 +111,8 @@ def record_bot_result(
     notes = f"[bot:{platform}] {bot_status} — {message}"[:2000]
 
     if existing:
-        existing.status = app_status
+        if existing.status != "applied":
+            existing.status = app_status
         existing.notes = notes
         if app_status == "applied" and not existing.applied_at:
             existing.applied_at = datetime.utcnow()
