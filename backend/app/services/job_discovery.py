@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from sqlalchemy.orm import Session
 
@@ -17,58 +18,137 @@ logger = logging.getLogger("app.discovery")
 
 SCRAPER_TIMEOUT_SEC = 180.0
 JOBS_PER_SOURCE = 50
+JOBS_PER_SOURCE_ALL = 150  # worldwide searches pull a bigger raw batch
 JOBS_AFTER_FILTER = 35
 # Sources that expose the whole feed: fetch broadly, then select locally by profile queries.
 BOARD_SOURCES = frozenset({"greenhouse"})
 BULK_SOURCES = frozenset({"remotive", "remoteok", "arbeitnow"})
 
 
-def _select_jobs_for_profile(
-    jobs: list[dict], queries: list[str], limit: int, profile: dict | None = None
-) -> list[dict]:
-    """Keep only jobs that match the resume's profile queries.
+def _query_select(jobs: list[dict], queries: list[str]) -> list[dict]:
+    """Keep jobs matching any resume query (title/description/company/skills).
 
     Every platform's feed is fetched, and only jobs relevant to this specific resume
     are kept. If nothing matches at all, return the raw batch so a niche profile still
-    gets *some* live results to evaluate. When a profile is available, jobs that clearly
-    demand far more experience than the resume has (e.g. Senior roles for a fresher)
-    are dropped unless that would leave nothing.
+    gets *some* live results to evaluate.
     """
     if not jobs:
         return []
     if not queries:
-        matched = jobs
+        return jobs
+    matched = []
+    for job in jobs:
+        haystack = " ".join(
+            [
+                str(job.get("title", "")),
+                str(job.get("description", "")),
+                str(job.get("company", "")),
+                " ".join(str(s) for s in (job.get("skills") or [])),
+            ]
+        ).lower()
+        if any(q.lower() in haystack for q in queries):
+            matched.append(job)
+    return matched if matched else jobs
+
+
+def _experience_select(matched: list[dict], profile: dict | None) -> list[dict]:
+    """Drop jobs that clearly demand far more experience than the resume has.
+
+    Applied only when that would not leave almost nothing (e.g. a fresher
+    searching worldwide would otherwise get a gutted list) — in that case
+    experience-suited jobs are ranked first instead.
+    """
+    if not profile:
+        return matched
+    from app.services.experience_level import estimate_experience_years, is_overqualified
+
+    years = estimate_experience_years(profile)
+    if years is None:
+        return matched
+    before = len(matched)
+    suited = [j for j in matched if not is_overqualified(j, years)]
+    if not suited:
+        return matched
+    if len(suited) >= min(20, len(matched)):
+        result = suited
+        mode = "filtered"
     else:
-        matched = []
-        for job in jobs:
-            haystack = " ".join(
-                [
-                    str(job.get("title", "")),
-                    str(job.get("description", "")),
-                    str(job.get("company", "")),
-                    " ".join(str(s) for s in (job.get("skills") or [])),
-                ]
-            ).lower()
-            if any(q.lower() in haystack for q in queries):
-                matched.append(job)
+        rest = [j for j in matched if j not in suited]
+        result = suited + rest
+        mode = "ranked suited first"
+    logger.info(
+        "Experience %s: %d jobs kept/%d (candidate years=%s, suited=%d)",
+        mode, len(result), before, years, len(suited),
+    )
+    return result
 
-    if not matched:
-        matched = jobs
 
-    if profile:
-        from app.services.experience_level import estimate_experience_years, is_overqualified
-
-        years = estimate_experience_years(profile)
-        if years is not None:
-            suited = [j for j in matched if not is_overqualified(j, years)]
-            if suited:
-                logger.info(
-                    "Experience filter: kept %d/%d jobs (candidate years=%s)",
-                    len(suited), len(matched), years,
-                )
-                matched = suited
-
+def _select_jobs_for_profile(
+    jobs: list[dict], queries: list[str], limit: int, profile: dict | None = None
+) -> list[dict]:
+    """Keep only jobs that match the resume's profile queries + experience level."""
+    matched = _query_select(jobs, queries)
+    matched = _experience_select(matched, profile)
     return matched[:limit]
+
+
+_REMOTE_LOCATION = re.compile(r"\bremote\b|work[\s-]?from[\s-]?home|\bwfh\b", re.I)
+_REMOTE_DESC = re.compile(
+    r"fully remote|remote[- ]first|100% remote|work(?:ing)? remotely|remote (?:position|role|job|schedule)",
+    re.I,
+)
+_HYBRID_PAT = re.compile(r"\bhybrid\b", re.I)
+_ONSITE_PAT = re.compile(r"on[\s-]?site|in[\s-]?office", re.I)
+
+
+def _work_type_match(remote_type: str, location: str, description: str, title: str = "") -> bool:
+    """Classify a job against the requested work type (any/remote/onsite/hybrid).
+
+    LinkedIn's guest search endpoint ignores the f_WT filter, so Job type is
+    applied here from the job's title + location + description text.
+    """
+    rt = (remote_type or "").lower()
+    if rt not in ("remote", "onsite", "hybrid"):
+        return True
+    loc = location or ""
+    head = f"{title or ''} {loc}"
+    desc = (description or "")[:3000]
+    if rt == "remote":
+        return bool(
+            _REMOTE_LOCATION.search(head)
+            or _REMOTE_DESC.search(desc)
+            or _REMOTE_DESC.search(head)
+        )
+    if rt == "hybrid":
+        return bool(_HYBRID_PAT.search(head) or _HYBRID_PAT.search(desc))
+    # onsite: explicit on-site wording, or a physical (non-remote) location
+    return bool(_ONSITE_PAT.search(desc)) or not _REMOTE_LOCATION.search(head)
+
+
+def _filter_by_work_type(jobs: list[dict], remote_type: str, min_keep: int = 1) -> list[dict]:
+    """Apply the work-type filter; fall back to the raw batch only when
+    classification matched nothing (e.g. enrichment throttled to zero)."""
+    rt = (remote_type or "").lower()
+    if rt not in ("remote", "onsite", "hybrid") or not jobs:
+        return jobs
+    kept = [
+        j
+        for j in jobs
+        if _work_type_match(
+            rt,
+            str(j.get("location") or ""),
+            str(j.get("description") or ""),
+            str(j.get("title") or ""),
+        )
+    ]
+    if len(kept) < min_keep:
+        logger.info(
+            "Work-type %s: only %d/%d matched — keeping unfiltered batch",
+            rt, len(kept), len(jobs),
+        )
+        return jobs
+    logger.info("Work-type %s: kept %d/%d jobs", rt, len(kept), len(jobs))
+    return kept
 
 
 async def _fetch_from_scraper(
@@ -77,6 +157,7 @@ async def _fetch_from_scraper(
     location_hint: str,
     query_index: int = 0,
     profile: dict | None = None,
+    remote_type: str = "",
 ) -> tuple[list[dict], int | None, int]:
     """Live search per platform for the candidate's role.
 
@@ -95,24 +176,41 @@ async def _fetch_from_scraper(
         else:
             raw = await scraper.fetch_jobs(query="", location="", limit=JOBS_PER_SOURCE)
             _total = None
+        if remote_type:
+            raw = _filter_by_work_type(raw, remote_type)
         kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER, profile=profile)
         # For bulk feeds the "available for role" is the matched subset.
         total = len(kept) if _total is None else _total
         return kept, total, len(raw or [])
     primary_query = queries[0] if queries else "software engineer"
+    fetch_limit = JOBS_PER_SOURCE if location_hint else JOBS_PER_SOURCE_ALL
     if hasattr(scraper, "fetch_jobs_with_count"):
         raw, total = await scraper.fetch_jobs_with_count(
             query=primary_query,
             location=location_hint,
-            limit=JOBS_PER_SOURCE,
+            limit=fetch_limit,
         )
     else:
         raw = await scraper.fetch_jobs(
             query=primary_query,
             location=location_hint,
-            limit=JOBS_PER_SOURCE,
+            limit=fetch_limit,
         )
         total = None
+    if remote_type:
+        # Guest search returns no work-type filter (f_WT ignored) and no
+        # descriptions — classify from location + enriched description over
+        # the query-matched set, BEFORE experience selection drops jobs.
+        matched = _query_select(raw, queries)
+        if source == "linkedin":
+            from app.agents.scraper.sources import enrich_linkedin_descriptions
+
+            await enrich_linkedin_descriptions(matched, max_fetch=60)
+        matched = _filter_by_work_type(matched, remote_type)
+        kept = _experience_select(matched, profile)[:JOBS_AFTER_FILTER]
+        if total is None:
+            total = len(kept)
+        return kept, total, len(raw or [])
     kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER, profile=profile)
     if total is None:
         total = len(kept)
@@ -126,6 +224,7 @@ async def _scrape_one(
     location_hint: str,
     query_index: int,
     profile: dict | None = None,
+    remote_type: str = "",
 ) -> tuple[str, list[dict], int | None, int, str | None]:
     source = scraper.source_name
     label = (
@@ -137,7 +236,10 @@ async def _scrape_one(
     step(f"SCRAPE_{source.upper()}", target=label)
     try:
         batch, total, raw_count = await asyncio.wait_for(
-            _fetch_from_scraper(scraper, queries, location_hint, query_index, profile=profile),
+            _fetch_from_scraper(
+                scraper, queries, location_hint, query_index,
+                profile=profile, remote_type=remote_type,
+            ),
             timeout=SCRAPER_TIMEOUT_SEC,
         )
         if source == "linkedin" and batch:
@@ -235,7 +337,10 @@ async def discover_jobs_for_candidate(
 
     results = await asyncio.gather(
         *[
-            _scrape_one(scraper, queries, location_hint, idx, profile=profile.model_dump())
+            _scrape_one(
+                scraper, queries, location_hint, idx,
+                profile=profile.model_dump(), remote_type=remote_type or "",
+            )
             for idx, scraper in enumerate(scrapers)
         ]
     )
@@ -324,6 +429,14 @@ async def discover_jobs_for_candidate(
             continue
         try:
             job_row = prepare_job_row(item, dedup_hash)
+            if remote_type and _work_type_match(
+                remote_type,
+                job_row.location or "",
+                job_row.description or "",
+                job_row.title or "",
+            ):
+                if not job_row.remote_type:
+                    job_row.remote_type = remote_type
             if remote_type and job_row.remote_type and job_row.remote_type.lower() != remote_type.lower():
                 skipped += 1
                 continue

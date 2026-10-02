@@ -90,9 +90,32 @@ class BotRunnerService:
     def _playwright_available(self) -> bool:
         try:
             from playwright.sync_api import sync_playwright  # noqa: F401
-
-            return True
         except ImportError:
+            return False
+        # The package isn't enough — the chromium binary must be installed
+        # too (`playwright install`). availability() is how the frontend
+        # decides whether the bot can run, so check the real browser cache.
+        try:
+            import os
+            import sys as _sys
+
+            env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+            if env_path:
+                # Playwright uses ONLY this path when set — don't fall back.
+                candidates = [Path(env_path)]
+            elif _sys.platform == "darwin":
+                candidates = [Path.home() / "Library" / "Caches" / "ms-playwright"]
+            else:
+                candidates = [Path.home() / ".cache" / "ms-playwright"]
+            candidates.append(Path("/ms-playwright"))
+            for root in candidates:
+                try:
+                    if root.exists() and any(root.glob("chromium*")):
+                        return True
+                except Exception:
+                    continue
+            return False
+        except Exception:
             return False
 
     def availability(self) -> dict:

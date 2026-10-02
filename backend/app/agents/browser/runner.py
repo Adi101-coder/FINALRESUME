@@ -244,11 +244,29 @@ class AutoApplyRunner:
 
     def __enter__(self) -> "AutoApplyRunner":
         self._playwright = sync_playwright().start()
+        self._ensure_browser()
+        return self
+
+    def _ensure_browser(self) -> None:
+        """Launch chromium, or relaunch it if the user closed the window /
+        the process crashed — one dead job must not fail the whole batch."""
+        if self._playwright is None:
+            self._playwright = sync_playwright().start()
+        if self._browser is not None:
+            try:
+                if self._browser.is_connected():
+                    return
+            except Exception:
+                pass
+            logger.warning("Browser no longer connected — relaunching")
+            try:
+                self._browser.close()
+            except Exception:
+                pass
         self._browser = self._playwright.chromium.launch(
             headless=self.headless,
             slow_mo=self.slow_mo_ms,
         )
-        return self
 
     def __exit__(self, *args) -> None:
         if self._browser:
@@ -317,7 +335,7 @@ class AutoApplyRunner:
                 logger.warning("Could not save session to DB: %s", exc)
 
     def _new_context(self, platform: str | None) -> BrowserContext:
-        assert self._browser is not None
+        self._ensure_browser()
         kwargs: dict = {"viewport": {"width": 1400, "height": 900}}
         if platform:
             state = self._load_storage_state(platform)
@@ -326,7 +344,7 @@ class AutoApplyRunner:
         return self._browser.new_context(**kwargs)
 
     def login_once(self, platform: str, start_url: str) -> None:
-        assert self._browser is not None
+        self._ensure_browser()
         context = self._browser.new_context(viewport={"width": 1400, "height": 900})
         page = context.new_page()
         page.goto(start_url, wait_until="domcontentloaded")
@@ -337,7 +355,7 @@ class AutoApplyRunner:
         context.close()
 
     def apply(self, url: str, profile: dict, resume_path: str) -> ApplyOutcome:
-        assert self._browser is not None
+        self._ensure_browser()
         platform = detect_platform(url) or "generic"
         context = self._new_context(platform if platform != "generic" else None)
         page = context.new_page()
@@ -365,7 +383,7 @@ class AutoApplyRunner:
         max_jobs: int | None = None,
         apply_mode: str | None = "top",
     ) -> list[dict]:
-        assert self._browser is not None
+        self._ensure_browser()
         context = self._new_context("linkedin")
         page = context.new_page()
 
@@ -449,7 +467,7 @@ class AutoApplyRunner:
         if not config:
             raise ValueError(f"Unsupported platform: {platform}")
 
-        assert self._browser is not None
+        self._ensure_browser()
         context = self._new_context(platform)
         page = context.new_page()
         applied_urls = self.load_applied_ids(platform)
@@ -546,7 +564,7 @@ class AutoApplyRunner:
                 apply_mode=apply_mode,
             )
 
-        assert self._browser is not None
+        self._ensure_browser()
         context = self._new_context(platform)
         page = context.new_page()
         collected: list[dict] = []

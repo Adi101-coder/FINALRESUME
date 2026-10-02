@@ -70,7 +70,50 @@ def _try_fill(locator: Locator, value: str) -> bool:
 
 
 def _profile_years(profile: dict) -> int:
-    return max(len(profile.get("experience") or []), 2)
+    """Actual years of experience from the resume (0 for freshers).
+
+    Never use the number of experience entries — a fresher with 4 projects/
+    internships listed must answer 0 years, not 4.
+    """
+    from app.services.experience_level import estimate_experience_years
+
+    years = estimate_experience_years(profile)
+    if years is None:
+        return 0
+    return max(0, int(round(years)))
+
+
+def _years_option_index(labels: list[str], years: int) -> int | None:
+    """Index of the <select> option for `years` without substring traps
+    (the answer "0" must never match "10+ years")."""
+    num = str(years)
+    pat = re.compile(rf"(?<!\d){re.escape(num)}(?!\d)")
+    for i, lab in enumerate(labels):
+        if lab and pat.search(lab):
+            return i
+    if years == 0:
+        for i, lab in enumerate(labels):
+            low = (lab or "").lower()
+            if "less than 1" in low or "<1" in low or "no experience" in low:
+                return i
+    return None
+
+
+def _select_answer(target, answer: str) -> bool:
+    """Answer a <select> field; numeric answers pick a boundary-safe option."""
+    try:
+        if answer.isdigit():
+            labels = target.evaluate(
+                "el => Array.from(el.options || []).map(o => (o.label || o.textContent || '').trim())"
+            )
+            idx = _years_option_index(labels or [], int(answer))
+            if idx is not None:
+                target.select_option(index=idx)
+                return True
+        target.select_option(label=re.compile(re.escape(answer), re.I))
+        return True
+    except Exception:
+        return False
 
 
 def repair_invalid_fields(page: Page, profile: dict, modal: Locator | None = None) -> tuple[int, int]:
@@ -123,7 +166,18 @@ def repair_invalid_fields(page: Page, profile: dict, modal: Locator | None = Non
         hint = (state["label"] or "").lower()
         try:
             if tag == "select" and state["valueMissing"]:
-                el.select_option(index=1)
+                idx = None
+                if "year" in hint or "how many" in hint:
+                    idx = _years_option_index(
+                        el.evaluate(
+                            "el => Array.from(el.options || []).map(o => (o.label || o.textContent || '').trim())"
+                        ) or [],
+                        years,
+                    )
+                if idx is not None:
+                    el.select_option(index=idx)
+                else:
+                    el.select_option(index=1)
                 fixed += 1
                 continue
             if typ in ("radio", "checkbox"):
@@ -143,9 +197,17 @@ def repair_invalid_fields(page: Page, profile: dict, modal: Locator | None = Non
                 continue
 
             new_value: str | None = None
+            salary_field = any(
+                k in hint for k in ("ctc", "current salary", "present salary", "last drawn")
+            )
             if state["valueMissing"]:
                 if "year" in hint or "how many" in hint:
                     new_value = str(years)
+                elif salary_field:
+                    # Fresher's current CTC is genuinely 0 — an empty required
+                    # CTC field used to block Next/Review forever.
+                    if years == 0:
+                        new_value = "0"
                 elif "city" in hint or "location" in hint:
                     new_value = clean_location(profile)
                 elif typ == "email" or "email" in hint:
@@ -173,14 +235,21 @@ def repair_invalid_fields(page: Page, profile: dict, modal: Locator | None = Non
                 except ValueError:
                     new_value = str(years)
             else:
-                digits = re.sub(r"\D", "", state["value"])
-                if digits:
-                    new_value = digits
-                elif "year" in hint:
-                    new_value = str(years)
+                if salary_field and years == 0 and not re.fullmatch(
+                    r"[\d,\s]+", state["value"].strip() or ""
+                ):
+                    # Human typed junk (e.g. "fresher") into CTC — LinkedIn's JS
+                    # rejects it on Next without flagging validity.
+                    new_value = "0"
                 else:
-                    cleaned = re.sub(r"[^\w @.:/+#-]", "", state["value"]).strip()
-                    new_value = cleaned or None
+                    digits = re.sub(r"\D", "", state["value"])
+                    if digits:
+                        new_value = digits
+                    elif "year" in hint:
+                        new_value = str(years)
+                    else:
+                        cleaned = re.sub(r"[^\w @.:/+#-]", "", state["value"]).strip()
+                        new_value = cleaned or None
 
             if not new_value:
                 remaining += 1
@@ -297,6 +366,8 @@ def fill_custom_questions(page: Page, profile: dict) -> int:
         (r"how did you hear", "LinkedIn"),
         (r"gender|race|ethnicity|veteran|military status|disability", "Prefer not to answer"),
     ]
+    if years == 0:
+        qa_pairs.append((r"current ctc|current salary|present salary|last drawn", "0"))
 
     for skill in skills[:8]:
         qa_pairs.append((rf"experience with {re.escape(skill)}|{re.escape(skill)}", "Yes"))
@@ -317,8 +388,8 @@ def fill_custom_questions(page: Page, profile: dict) -> int:
                 if answer == "Yes" and re.search(r"year|how many", lab, re.I):
                     effective = str(years)
                 if tag == "select":
-                    target.select_option(label=re.compile(effective, re.I))
-                    filled += 1
+                    if _select_answer(target, effective):
+                        filled += 1
                 elif _try_fill(target, effective):
                     filled += 1
         except Exception:

@@ -11,7 +11,7 @@ from app.services.auto_apply_config import (
     get_or_create_config,
     save_auto_apply_resume,
 )
-from app.services.session_store import list_sessions
+from app.services.session_store import list_sessions, save_session
 
 logger = logging.getLogger("app.auto_apply")
 
@@ -78,3 +78,24 @@ def get_sessions(candidate_id: int, db: Session = Depends(get_db)):
     if not db.get(Candidate, candidate_id):
         raise HTTPException(status_code=404, detail="Candidate not found.")
     return {"candidate_id": candidate_id, "sessions": list_sessions(db, candidate_id)}
+
+
+class SessionUpload(BaseModel):
+    storage_state: dict
+
+
+@router.put("/{candidate_id}/sessions/{platform}")
+def upload_session(candidate_id: int, platform: str, payload: SessionUpload, db: Session = Depends(get_db)):
+    """Save a Playwright storage_state (e.g. LinkedIn cookies captured on the
+    local machine) so a headless/cloud deployment can reuse the login."""
+    if not db.get(Candidate, candidate_id):
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    state = payload.storage_state
+    if not isinstance(state, dict) or not isinstance(state.get("cookies"), list) or not state["cookies"]:
+        raise HTTPException(
+            status_code=422,
+            detail="storage_state must be a Playwright storage_state dict with a non-empty cookies list.",
+        )
+    save_session(db, candidate_id, platform, state)
+    logger.info("Session uploaded: candidate_id=%s platform=%s (%d cookies)", candidate_id, platform, len(state["cookies"]))
+    return {"candidate_id": candidate_id, "platform": platform, "saved": True, "cookies": len(state["cookies"])}

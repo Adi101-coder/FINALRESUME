@@ -536,7 +536,10 @@ class LinkedInScraper(BaseJobScraper):
         return jobs, self.last_total_available
 
     async def fetch_jobs(self, query: str = "", location: str = "", limit: int = 50) -> list[dict]:
-        logger.info("LinkedIn fetch: query=%r location=%r", query or "(default)", location or "(default)")
+        logger.info(
+            "LinkedIn fetch: query=%r location=%r",
+            query or "(default)", location or "(default)",
+        )
 
         headers = dict(DEFAULT_HEADERS)
         if settings.linkedin_session_cookie:

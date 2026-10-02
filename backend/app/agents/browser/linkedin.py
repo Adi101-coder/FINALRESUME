@@ -216,7 +216,7 @@ def already_applied(page: Page) -> bool:
             continue
     try:
         panel_text = (details.inner_text() or "").lower()
-        if re.search(r"application (submitted|sent|status)|you applied", panel_text):
+        if re.search(r"application (submitted|sent)|you applied|applied now", panel_text):
             return True
     except Exception:
         pass
@@ -415,22 +415,58 @@ def _wait_for_modal(page: Page, timeout_ms: int = 6000) -> bool:
     return _modal_visible(page)
 
 
-_SUBMISSION_PHRASES = ("application sent", "application submitted", "your application was sent", "application status")
+_SUBMISSION_PHRASES = (
+    "application sent",
+    "application submitted",
+    "your application was sent",
+    "applied now",
+    "has been submitted",
+)
 
 
-def _submission_confirmed(page: Page, modal_text: str = "") -> bool:
+def _application_modal_open(page: Page) -> bool:
+    """True only when a live application modal (Next/Review/Submit controls)
+    is open. Post-submit popups (job alert, 'not now', …) must NOT count —
+    they used to short-circuit submission detection."""
+    try:
+        dialogs = page.locator("dialog, .jobs-easy-apply-modal, div[role='dialog']")
+        for i in range(min(dialogs.count(), 6)):
+            d = dialogs.nth(i)
+            try:
+                if d.is_visible():
+                    labels = " ".join(d.locator("button").all_inner_texts())
+                    if _MODAL_CONTROL_RE.search(labels):
+                        return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _submission_confirmed(page: Page, modal_text: str = "", *, settle_sec: float = 5.0) -> bool:
     """True when LinkedIn confirms the application — checked in the modal first,
     then on the page itself (after Submit the modal closes and the job page
-    shows 'Application status: Application submitted')."""
+    shows 'Application status: Application submitted').
+
+    Polls for up to settle_sec: right after Submit the page navigates/reloads
+    (inner_text raises or the section renders late), and a one-shot check
+    raced the render — real submissions were misreported as review_required."""
     if any(p in (modal_text or "").lower() for p in _SUBMISSION_PHRASES):
         return True
-    try:
-        if _modal_visible(page):
+    deadline = time.monotonic() + settle_sec
+    while True:
+        try:
+            if _application_modal_open(page):
+                return False
+            page_text = (page.inner_text("body") or "").lower()
+            if any(p in page_text for p in _SUBMISSION_PHRASES):
+                return True
+        except Exception:
+            pass  # navigation / re-render in progress — keep polling
+        if time.monotonic() >= deadline:
             return False
-        page_text = (page.inner_text("body") or "").lower()
-        return any(p in page_text for p in _SUBMISSION_PHRASES)
-    except Exception:
-        return False
+        page.wait_for_timeout(600)
 
 
 def _dismiss_blocking_overlays(page: Page) -> None:
@@ -459,7 +495,36 @@ def _review_with_screenshot(page: Page) -> str:
     return APPLY_RESULT_REVIEW
 
 
-def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, max_steps: int = 12) -> str:
+def _read_dialog_text(page: Page) -> str:
+    """Read the current dialog's text without going blind.
+
+    The walk's dialog locator goes stale after LinkedIn re-renders it
+    (inner_text then raises or returns ''), which used to reset the step
+    signature to '' and bail out of otherwise-healthy applications."""
+    try:
+        modal = _easy_apply_modal(page)
+        text = (modal.inner_text() or "").strip().lower()
+        if text:
+            return text
+    except Exception:
+        pass
+    try:
+        for sel in ("dialog", "div[role='dialog']", ".jobs-easy-apply-modal"):
+            loc = page.locator(sel)
+            for i in range(min(loc.count(), 5)):
+                try:
+                    if loc.nth(i).is_visible():
+                        text = (loc.nth(i).inner_text() or "").strip().lower()
+                        if text:
+                            return text
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return ""
+
+
+def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, max_steps: int = 16) -> str:
     """Walk through LinkedIn Easy Apply modal — Next → Review → Submit."""
     for _ in range(30):
         if _modal_visible(page):
@@ -484,6 +549,8 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
     human_assisted = False
 
     for step in range(max_steps):
+        # Dialog is replaced by LinkedIn between steps — always re-resolve.
+        modal = _easy_apply_modal(page)
         if captcha_present(page):
             try:
                 wait_for_human(page, "LinkedIn: solve CAPTCHA in the Easy Apply modal, then press ENTER.", timeout_sec=150)
@@ -511,11 +578,7 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
             except TimeoutError:
                 return _review_with_screenshot(page)
 
-        body = ""
-        try:
-            body = (modal.inner_text() or "").lower()
-        except Exception:
-            pass
+        body = _read_dialog_text(page)
 
         if _save_dialog_visible(page):
             # The modal X was hit at some point — clean up and let the run continue.
@@ -543,9 +606,29 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
             elif _click_by_patterns(page, MODAL_DONE, scope=modal):
                 return APPLY_RESULT_SUBMITTED
             else:
+                if not body and _modal_visible(page):
+                    # A dialog exists but its text isn't readable yet (mid
+                    # re-render) — wait instead of counting a blind identical
+                    # step (that used to bail out of healthy applications).
+                    same_step_count = 0
+                    last_step_sig = ""
+                    page.wait_for_timeout(600)
+                    continue
                 step_sig = body[:200]
                 if step_sig == last_step_sig:
                     same_step_count += 1
+                    if same_step_count == 1 and _click_by_patterns(page, (r"^back$",), scope=modal):
+                        # Next/Review silently ignores clicks while a required
+                        # field on an EARLIER page is unanswered — step back,
+                        # repair what's there, then come forward again.
+                        logger.info("Stalled — stepping Back to repair an earlier page")
+                        page.wait_for_timeout(900)
+                        fill_standard_fields(page, profile)
+                        fill_custom_questions(page, profile)
+                        repair_invalid_fields(page, profile, modal)
+                        same_step_count = 0
+                        last_step_sig = ""
+                        continue
                     if same_step_count >= 2:
                         if _submission_confirmed(page, body):
                             return APPLY_RESULT_SUBMITTED
@@ -571,10 +654,7 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
                     same_step_count = 0
                 last_step_sig = step_sig
 
-        try:
-            body = (modal.inner_text() or "").lower()
-        except Exception:
-            body = ""
+        body = _read_dialog_text(page)
         if _submission_confirmed(page, body):
             _click_by_patterns(page, MODAL_DONE, scope=modal)
             return APPLY_RESULT_SUBMITTED

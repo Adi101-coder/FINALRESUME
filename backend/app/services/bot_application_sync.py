@@ -93,6 +93,11 @@ def record_bot_result(
     platform = result.get("platform") or "bot"
     message = result.get("message") or ""
 
+    # "Already applied" means the application EXISTS on LinkedIn — record it
+    # as applied (e.g. a prior run submitted but failed to detect it).
+    if bot_status == "unsupported" and "already applied" in message.lower():
+        app_status = "applied"
+
     job = ensure_job(
         db,
         title=title,
