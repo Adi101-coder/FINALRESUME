@@ -263,9 +263,15 @@ class AutoApplyRunner:
                 self._browser.close()
             except Exception:
                 pass
+        args = ["--disable-dev-shm-usage", "--disable-gpu"]
+        if sys.platform.startswith("linux"):
+            # Containers (Render/Docker) have no user-namespace sandbox and a
+            # tiny /dev/shm — without these Chromium dies at launch/first tab.
+            args.append("--no-sandbox")
         self._browser = self._playwright.chromium.launch(
             headless=self.headless,
             slow_mo=self.slow_mo_ms,
+            args=args,
         )
 
     def __exit__(self, *args) -> None:
