@@ -13,7 +13,7 @@ from app.database.models import PlatformSession
 
 logger = logging.getLogger("app.session_store")
 
-PLATFORMS = ("linkedin", "indeed", "foundit", "naukri", "ziprecruiter", "glassdoor")
+PLATFORMS = ("linkedin",)
 
 
 def get_session(db: Session, candidate_id: int, platform: str) -> dict | None:

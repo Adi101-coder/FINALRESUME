@@ -15,7 +15,7 @@ from app.services.profile_queries import build_search_queries
 
 logger = logging.getLogger("app.discovery")
 
-SCRAPER_TIMEOUT_SEC = 30.0
+SCRAPER_TIMEOUT_SEC = 180.0
 JOBS_PER_SOURCE = 50
 JOBS_AFTER_FILTER = 35
 # Sources that expose the whole feed: fetch broadly, then select locally by profile queries.
@@ -23,32 +23,52 @@ BOARD_SOURCES = frozenset({"greenhouse"})
 BULK_SOURCES = frozenset({"remotive", "remoteok", "arbeitnow"})
 
 
-def _select_jobs_for_profile(jobs: list[dict], queries: list[str], limit: int) -> list[dict]:
+def _select_jobs_for_profile(
+    jobs: list[dict], queries: list[str], limit: int, profile: dict | None = None
+) -> list[dict]:
     """Keep only jobs that match the resume's profile queries.
 
     Every platform's feed is fetched, and only jobs relevant to this specific resume
     are kept. If nothing matches at all, return the raw batch so a niche profile still
-    gets *some* live results to evaluate.
+    gets *some* live results to evaluate. When a profile is available, jobs that clearly
+    demand far more experience than the resume has (e.g. Senior roles for a fresher)
+    are dropped unless that would leave nothing.
     """
     if not jobs:
         return []
     if not queries:
-        return jobs[:limit]
+        matched = jobs
+    else:
+        matched = []
+        for job in jobs:
+            haystack = " ".join(
+                [
+                    str(job.get("title", "")),
+                    str(job.get("description", "")),
+                    str(job.get("company", "")),
+                    " ".join(str(s) for s in (job.get("skills") or [])),
+                ]
+            ).lower()
+            if any(q.lower() in haystack for q in queries):
+                matched.append(job)
 
-    matched: list[dict] = []
-    for job in jobs:
-        haystack = " ".join(
-            [
-                str(job.get("title", "")),
-                str(job.get("description", "")),
-                str(job.get("company", "")),
-                " ".join(str(s) for s in (job.get("skills") or [])),
-            ]
-        ).lower()
-        if any(q.lower() in haystack for q in queries):
-            matched.append(job)
+    if not matched:
+        matched = jobs
 
-    return (matched or jobs)[:limit]
+    if profile:
+        from app.services.experience_level import estimate_experience_years, is_overqualified
+
+        years = estimate_experience_years(profile)
+        if years is not None:
+            suited = [j for j in matched if not is_overqualified(j, years)]
+            if suited:
+                logger.info(
+                    "Experience filter: kept %d/%d jobs (candidate years=%s)",
+                    len(suited), len(matched), years,
+                )
+                matched = suited
+
+    return matched[:limit]
 
 
 async def _fetch_from_scraper(
@@ -56,6 +76,7 @@ async def _fetch_from_scraper(
     queries: list[str],
     location_hint: str,
     query_index: int = 0,
+    profile: dict | None = None,
 ) -> tuple[list[dict], int | None, int]:
     """Live search per platform for the candidate's role.
 
@@ -74,7 +95,7 @@ async def _fetch_from_scraper(
         else:
             raw = await scraper.fetch_jobs(query="", location="", limit=JOBS_PER_SOURCE)
             _total = None
-        kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER)
+        kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER, profile=profile)
         # For bulk feeds the "available for role" is the matched subset.
         total = len(kept) if _total is None else _total
         return kept, total, len(raw or [])
@@ -92,7 +113,7 @@ async def _fetch_from_scraper(
             limit=JOBS_PER_SOURCE,
         )
         total = None
-    kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER)
+    kept = _select_jobs_for_profile(raw, queries, limit=JOBS_AFTER_FILTER, profile=profile)
     if total is None:
         total = len(kept)
     # Return both kept and raw count for accurate platform stats
@@ -104,6 +125,7 @@ async def _scrape_one(
     queries: list[str],
     location_hint: str,
     query_index: int,
+    profile: dict | None = None,
 ) -> tuple[str, list[dict], int | None, int, str | None]:
     source = scraper.source_name
     label = (
@@ -115,9 +137,14 @@ async def _scrape_one(
     step(f"SCRAPE_{source.upper()}", target=label)
     try:
         batch, total, raw_count = await asyncio.wait_for(
-            _fetch_from_scraper(scraper, queries, location_hint, query_index),
+            _fetch_from_scraper(scraper, queries, location_hint, query_index, profile=profile),
             timeout=SCRAPER_TIMEOUT_SEC,
         )
+        if source == "linkedin" and batch:
+            from app.agents.scraper.sources import enrich_linkedin_descriptions
+
+            enriched = await enrich_linkedin_descriptions(batch)
+            logger.info("LinkedIn enriched %d/%d job descriptions", enriched, len(batch))
         scraper_error = getattr(scraper, "last_error", None)
         if not batch and scraper_error:
             step_fail(f"SCRAPE_{source.upper()}", scraper_error)
@@ -169,11 +196,14 @@ async def discover_jobs_for_candidate(
     scrapers = build_scrapers()
 
     if sources:
-        scrapers = [s for s in scrapers if s.source_name in sources]
+        available = {s.source_name for s in scrapers}
+        requested = [s for s in sources if s in available]
+        if requested:
+            scrapers = [s for s in scrapers if s.source_name in requested]
         step(
             "FILTER_SOURCES",
             filtered=len(scrapers),
-            selected=",".join(sources),
+            selected=",".join(requested) or "linkedin (default)",
         )
     step(
         "INIT_SOURCES",
@@ -184,7 +214,7 @@ async def discover_jobs_for_candidate(
 
     results = await asyncio.gather(
         *[
-            _scrape_one(scraper, queries, location_hint, idx)
+            _scrape_one(scraper, queries, location_hint, idx, profile=profile.model_dump())
             for idx, scraper in enumerate(scrapers)
         ]
     )
@@ -257,6 +287,7 @@ async def discover_jobs_for_candidate(
 
     selected_hashes: list[str] = []
     rows_to_add: list[Job] = []
+    backfill: list[tuple[str, dict]] = []
     for item, dedup_hash in candidates:
         if dedup_hash in existing_hashes:
             if remote_type:
@@ -266,6 +297,8 @@ async def discover_jobs_for_candidate(
                 if stored and stored[0] and stored[0].lower() != remote_type.lower():
                     skipped += 1
                     continue
+            if item.get("description"):
+                backfill.append((dedup_hash, item))
             selected_hashes.append(dedup_hash)
             continue
         try:
@@ -281,6 +314,24 @@ async def discover_jobs_for_candidate(
 
     db.add_all(rows_to_add)
     db.flush()
+
+    if backfill:
+        stored_rows = {
+            row.dedup_hash: row
+            for row in db.query(Job)
+            .filter(Job.dedup_hash.in_([h for h, _ in backfill]))
+            .all()
+        }
+        updated = 0
+        for dedup_hash, item in backfill:
+            row = stored_rows.get(dedup_hash)
+            if row and not (row.description or "").strip():
+                row.description = item["description"][:50_000]
+                if item.get("easy_apply"):
+                    row.easy_apply = True
+                updated += 1
+        if updated:
+            logger.info("Backfilled descriptions for %d existing jobs", updated)
 
     candidate_job_ids: list[int] = []
     if selected_hashes:

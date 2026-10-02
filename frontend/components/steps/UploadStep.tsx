@@ -32,7 +32,7 @@ export function UploadStep({ onComplete, loading, error, onError }: Props) {
   return (
     <div className="max-w-2xl mx-auto text-center">
       <h1 className="text-3xl font-bold text-ink mb-2">Upload Your Resume</h1>
-      <p className="text-ink-500 mb-8">PDF only. We'll parse it and extract your skills, experience, and preferences.</p>
+      <p className="text-ink-500 mb-8">PDF only. We&rsquo;ll parse it and extract your skills, experience, and preferences.</p>
 
       {error && <div className="alert-error mb-6">{error}</div>}
 

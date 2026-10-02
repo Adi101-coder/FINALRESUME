@@ -19,7 +19,7 @@ type Props = {
   onApplicationsChanged?: () => void;
 };
 
-const PLATFORMS = ["linkedin", "indeed", "foundit", "naukri"];
+const PLATFORMS = ["linkedin"];
 
 const JOB_TYPES = [
   { key: "", label: "Any" },

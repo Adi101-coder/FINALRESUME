@@ -39,7 +39,7 @@ const FEATURES = [
 ];
 
 const DAILY_FEATURES = [
-  "Live job discovery from LinkedIn, Indeed, Foundit + Naukri.com",
+  "Live job discovery from LinkedIn",
   "Profile-based queries that adapt to any industry",
   "ATS-aware resume personalization per role",
   "Persistent application history and analytics",
@@ -47,12 +47,12 @@ const DAILY_FEATURES = [
 
 const FOCUS_BENEFITS = [
   "One resume upload powers the entire pipeline",
-  "Parallel discovery across job boards and company career pages (Greenhouse)",
+  "Live LinkedIn discovery for your exact role — no static job pool",
   "Threshold-based matching so you focus on strong fits",
   "Export-ready PDFs tailored to each posting",
 ];
 
-const TRUSTED = ["LinkedIn", "Indeed", "Foundit", "Naukri.com"];
+const TRUSTED = ["LinkedIn"];
 const COMMUNITY = ["AK", "JM", "SR", "PL", "DC", "EV", "TH", "NW"];
 
 export default function HomePage() {
@@ -63,12 +63,7 @@ export default function HomePage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>([
-    "linkedin",
-    "indeed",
-    "foundit",
-    "naukri",
-  ]);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(["linkedin"]);
   const [remoteType, setRemoteType] = useState<string>("");
   const [reviewQueue, setReviewQueue] = useState<MatchResult[]>([]);
 
@@ -149,7 +144,7 @@ export default function HomePage() {
               Apply smarter, <span className="font-serif italic font-normal">not harder.</span>
             </h1>
             <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed text-ink-500">
-              ResumeBuild parses your resume, discovers jobs across every major board, scores each
+              ResumeBuild parses your resume, discovers matching jobs on LinkedIn, scores each
               role against your profile, and tracks every application — all in one flow.
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -463,6 +458,8 @@ export default function HomePage() {
                 remoteType={remoteType}
                 onRemoteTypeChange={setRemoteType}
                 onAddToQueue={handleAddToQueue}
+                onRemoveFromQueue={handleRemoveFromQueue}
+                queuedJobIds={reviewQueue.map((m) => m.job_id)}
               />
             )}
 

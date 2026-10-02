@@ -10,15 +10,6 @@ import {
 
 const PLATFORMS = [
   { key: "linkedin", label: "LinkedIn", auth: "login required", needsLoginForSearch: true },
-  { key: "indeed", label: "Indeed", auth: "login recommended", needsLoginForSearch: false },
-  { key: "foundit", label: "Foundit", auth: "login recommended", needsLoginForSearch: false },
-  { key: "naukri", label: "Naukri.com", auth: "login recommended", needsLoginForSearch: false },
-  { key: "ziprecruiter", label: "ZipRecruiter", auth: "free", needsLoginForSearch: false },
-  { key: "glassdoor", label: "Glassdoor", auth: "login recommended", needsLoginForSearch: false },
-  { key: "greenhouse", label: "Greenhouse", auth: "free", needsLoginForSearch: false },
-  { key: "remotive", label: "Remotive", auth: "free", needsLoginForSearch: false },
-  { key: "remoteok", label: "RemoteOK", auth: "free", needsLoginForSearch: false },
-  { key: "arbeitnow", label: "Arbeitnow", auth: "free", needsLoginForSearch: false },
 ];
 
 const JOB_TYPES = [
@@ -106,7 +97,7 @@ export function PlatformStep({
         try {
           const s = await getBotStatus(candidateId);
           if (s.state === "error") {
-            onError(s.error || `${platform} login failed on server. Free boards work without login.`);
+            onError(s.error || `${platform} login failed on server. Check the backend logs and retry.`);
             setLoginPlatform(null);
             setLoginBusy(false);
             return;
@@ -118,7 +109,7 @@ export function PlatformStep({
       }
       if (!isLocal) {
         setInfo(
-          `${platform} login started on the server. On the hosted version, browser login doesn't work (no display). Run locally for full login support, or use free boards (Remotive, RemoteOK, Arbeitnow, Greenhouse, ZipRecruiter) which work without login.`,
+          `${platform} login started on the server. On the hosted version, browser login doesn't work (no display) — run the backend locally to complete the LinkedIn login.`,
         );
       } else {
         setInfo(
@@ -152,8 +143,8 @@ export function PlatformStep({
     <div className="max-w-3xl mx-auto">
       <h1 className="text-3xl font-bold text-ink mb-2">Select Platforms</h1>
       <p className="text-ink-500 mb-8">
-        Free boards search instantly. LinkedIn needs login. Others work without login, login only
-        improves results.
+        LinkedIn is the job source for this app. Log in once with the button below, then discovery
+        and auto-apply run against your LinkedIn session.
       </p>
 
       {error && <div className="alert-error mb-6">{error}</div>}
@@ -226,9 +217,8 @@ export function PlatformStep({
       </div>
 
       <p className="mb-6 text-xs text-ink-400">
-        Note: interactive browser login opens on the machine running the backend. On the hosted
-        demo it may fail — free boards (Remotive, RemoteOK, Arbeitnow, Greenhouse, ZipRecruiter)
-        search without any login.
+        Note: the interactive browser login opens on the machine running the backend. Complete the
+        LinkedIn sign-in there, then press “Login Done — Save Session”.
       </p>
 
       {loginPlatform && (

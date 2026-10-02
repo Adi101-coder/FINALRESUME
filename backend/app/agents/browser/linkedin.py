@@ -48,7 +48,9 @@ APPLY_BUTTON_SELECTORS = (
     'button[aria-label*="Easy Apply to" i]',
     'button[aria-label*="Apply to" i]',
     'button[aria-label*="Apply for" i]',
+    'a[aria-label*="Easy Apply" i]',
     'a[href*="openSDUIApplyFlow=true"]',
+    'button:has-text("Easy Apply")',
 )
 
 DETAILS_PANEL_SELECTORS = (
@@ -109,6 +111,31 @@ def _debug_buttons(details: Locator) -> str:
     except Exception as exc:
         lines.append(f"(debug error: {exc})")
     return "; ".join(lines) if lines else "(no apply-like buttons visible in job panel)"
+
+
+def _no_apply_reason(page: Page, details: Locator) -> str:
+    """Explain why no Easy Apply button was found: closed job / external apply / unknown."""
+    panel_text = ""
+    try:
+        panel_text = details.inner_text() or ""
+    except Exception:
+        try:
+            panel_text = page.inner_text("body") or ""
+        except Exception:
+            pass
+    low = panel_text.lower()
+    if "no longer accepting applications" in low or "not currently accepting applications" in low:
+        return "Job is no longer accepting applications — skipped."
+    external = page.locator(
+        'a[aria-label*="company website" i], a[aria-label*="External Apply" i], '
+        'button[aria-label*="company website" i]'
+    )
+    try:
+        if external.count() > 0 and external.first.is_visible():
+            return "External apply only (Apply on company website) — not an Easy Apply job, skipped."
+    except Exception:
+        pass
+    return f"No Easy Apply button found. {_debug_buttons(details)}"
 
 
 def _click_locator(loc: Locator, *, timeout_ms: int = 8000) -> bool:
@@ -291,10 +318,45 @@ def click_easy_apply(page: Page, *, debug: bool = False) -> bool:
     return False
 
 
+_MODAL_CONTROL_RE = re.compile(r"next|submit|review|continue|done", re.I)
+
+
 def _easy_apply_modal(page: Page) -> Locator:
-    return page.locator(
-        'div[role="dialog"], .jobs-easy-apply-modal, .artdeco-modal, div[data-test-modal-id]'
-    ).first
+    """Locate the Easy Apply application modal.
+
+    LinkedIn currently wraps it in a native <dialog>, while a sibling
+    div[role=dialog] overlay carries no controls — and the save-draft prompt
+    is yet another dialog. Pick the visible dialog that actually has buttons.
+    """
+    try:
+        dialogs = page.locator("dialog, .jobs-easy-apply-modal, div[role='dialog']")
+        count = dialogs.count()
+        visible: list[Locator] = []
+        for i in range(min(count, 6)):
+            d = dialogs.nth(i)
+            try:
+                if d.is_visible():
+                    visible.append(d)
+            except Exception:
+                continue
+        for d in visible:
+            try:
+                labels = " ".join(d.locator("button").all_inner_texts())
+                if _MODAL_CONTROL_RE.search(labels):
+                    return d
+            except Exception:
+                continue
+        for d in visible:
+            try:
+                if d.locator("button").count() > 0:
+                    return d
+            except Exception:
+                continue
+        if visible:
+            return visible[0]
+    except Exception:
+        pass
+    return page.locator("dialog, .jobs-easy-apply-modal, div[role='dialog']").first
 
 
 def _modal_visible(page: Page) -> bool:
@@ -306,7 +368,29 @@ def _modal_visible(page: Page) -> bool:
 
 
 def _dismiss_blocking_overlays(page: Page) -> None:
-    _click_by_patterns(page, (r"^dismiss$", r"^close$", r"^not now$", r"^no thanks$"))
+    # NOTE: never match dismiss/close here — that is the Easy Apply modal's own X,
+    # which opens LinkedIn's "Save this application?" dialog and breaks the run.
+    _click_by_patterns(page, (r"^not now$", r"^no thanks$"))
+
+
+def _save_dialog_visible(page: Page) -> bool:
+    try:
+        return "save this application" in (page.inner_text("body") or "").lower()
+    except Exception:
+        return False
+
+
+def _review_with_screenshot(page: Page) -> str:
+    """Bail out of a stuck modal, keeping a debug screenshot for diagnosis."""
+    debug_dir = Path("storage/browser_sessions/debug")
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    shot = debug_dir / f"modal_review_{int(time.time())}.png"
+    try:
+        page.screenshot(path=str(shot), full_page=False)
+        logger.info("Review-required screenshot: %s", shot)
+    except Exception:
+        pass
+    return APPLY_RESULT_REVIEW
 
 
 def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, max_steps: int = 12) -> str:
@@ -321,10 +405,14 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
     modal = _easy_apply_modal(page)
     last_step_sig = ""
     same_step_count = 0
+    human_assisted = False
 
     for step in range(max_steps):
         if captcha_present(page):
-            wait_for_human(page, "LinkedIn: solve CAPTCHA in the Easy Apply modal, then press ENTER.")
+            try:
+                wait_for_human(page, "LinkedIn: solve CAPTCHA in the Easy Apply modal, then press ENTER.", timeout_sec=150)
+            except TimeoutError:
+                return _review_with_screenshot(page)
 
         fill_standard_fields(page, profile)
         fill_custom_questions(page, profile)
@@ -336,6 +424,11 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         except Exception:
             pass
 
+        if _save_dialog_visible(page):
+            # The modal X was hit at some point — clean up and let the run continue.
+            _click_by_patterns(page, (r"^discard$",))
+            return _review_with_screenshot(page)
+
         if any(
             phrase in body
             for phrase in ("application sent", "application submitted", "your application was sent")
@@ -343,28 +436,37 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
             _click_by_patterns(page, MODAL_DONE, scope=modal)
             return APPLY_RESULT_SUBMITTED
 
-        # LinkedIn often uses aria-label on modal buttons
-        for aria in ("Submit application", "Submit", "Continue to next step", "Review your application"):
+        # Advance first (Next/Review), then Submit, and only close via DONE after
+        # submission — clicking the modal's X opens LinkedIn's save-draft dialog.
+        for aria in ("Continue to next step", "Review your application", "Submit application", "Submit"):
             btn = modal.locator(f'button[aria-label="{aria}" i]')
             if _click_locator(btn):
                 page.wait_for_timeout(2000)
                 break
         else:
-            if _click_by_patterns(page, MODAL_SUBMIT, scope=modal):
+            if _click_by_patterns(page, MODAL_NEXT, scope=modal):
+                page.wait_for_timeout(1200)
+            elif _click_by_patterns(page, MODAL_SUBMIT, scope=modal):
                 page.wait_for_timeout(2000)
             elif _click_by_patterns(page, MODAL_DONE, scope=modal):
                 return APPLY_RESULT_SUBMITTED
-            elif _click_by_patterns(page, MODAL_NEXT, scope=modal):
-                page.wait_for_timeout(1200)
             else:
                 step_sig = body[:200]
                 if step_sig == last_step_sig:
                     same_step_count += 1
                     if same_step_count >= 2:
-                        wait_for_human(
-                            page,
-                            f"LinkedIn step {step + 1}: answer required questions in the modal, then press ENTER.",
-                        )
+                        if human_assisted or not captcha_present(page):
+                            # Can't make progress — skip this job, keep the run going.
+                            return _review_with_screenshot(page)
+                        human_assisted = True
+                        try:
+                            wait_for_human(
+                                page,
+                                f"LinkedIn step {step + 1}: answer required questions in the modal, then press ENTER.",
+                                timeout_sec=150,
+                            )
+                        except TimeoutError:
+                            return _review_with_screenshot(page)
                         same_step_count = 0
                 else:
                     same_step_count = 0
@@ -384,7 +486,7 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         _dismiss_blocking_overlays(page)
         page.wait_for_timeout(800)
 
-    return APPLY_RESULT_REVIEW
+    return _review_with_screenshot(page)
 
 
 def close_easy_apply_modal(page: Page) -> None:
@@ -392,11 +494,18 @@ def close_easy_apply_modal(page: Page) -> None:
     if modal.count() > 0 and modal.is_visible():
         _click_by_patterns(page, MODAL_DONE, scope=modal)
         _click_by_patterns(page, (r"^dismiss$", r"^close$", r"^cancel$"), scope=modal)
+        page.wait_for_timeout(400)
     try:
         page.keyboard.press("Escape")
     except Exception:
         pass
-    page.wait_for_timeout(600)
+    page.wait_for_timeout(400)
+    if _save_dialog_visible(page):
+        # Closing mid-application asked to save a draft — discard it so the
+        # next job starts with a clean page (LinkedIn rejects stale drafts).
+        _click_by_patterns(page, (r"^discard$",))
+        page.wait_for_timeout(400)
+    page.wait_for_timeout(300)
 
 
 def _open_job_card(page: Page, card: Locator) -> bool:
@@ -640,7 +749,7 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
         details = _job_details_panel(page)
         return ApplyOutcome(
             APPLY_RESULT_UNSUPPORTED,
-            f"No Easy Apply button found. {_debug_buttons(details)}",
+            _no_apply_reason(page, details),
             "linkedin",
             url,
         )

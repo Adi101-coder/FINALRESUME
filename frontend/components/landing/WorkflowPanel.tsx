@@ -20,15 +20,6 @@ const PIPELINE = [
 
 const PLATFORMS = [
   { key: "linkedin", label: "LinkedIn", auth: "login required", needsLoginForSearch: true },
-  { key: "indeed", label: "Indeed", auth: "login recommended", needsLoginForSearch: true },
-  { key: "foundit", label: "Foundit", auth: "login recommended", needsLoginForSearch: true },
-  { key: "naukri", label: "Naukri.com", auth: "login recommended", needsLoginForSearch: true },
-  { key: "ziprecruiter", label: "ZipRecruiter", auth: "free", needsLoginForSearch: false },
-  { key: "glassdoor", label: "Glassdoor", auth: "login recommended", needsLoginForSearch: true },
-  { key: "greenhouse", label: "Greenhouse", auth: "free", needsLoginForSearch: false },
-  { key: "remotive", label: "Remotive", auth: "free", needsLoginForSearch: false },
-  { key: "remoteok", label: "RemoteOK", auth: "free", needsLoginForSearch: false },
-  { key: "arbeitnow", label: "Arbeitnow", auth: "free", needsLoginForSearch: false },
 ];
 
 const JOB_TYPES = [
@@ -281,8 +272,8 @@ export function WorkflowPanel({
                       <div className="mt-2 p-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
                         <p className="font-medium">Complete login in the browser window:</p>
                         <ul className="mt-1 list-disc list-inside space-y-0.5">
-                          <li>If you see "Sign in with Google", click it and complete Google sign-in</li>
-                          <li>Make sure you're using the correct Google account</li>
+                          <li>If you see &ldquo;Sign in with Google&rdquo;, click it and complete Google sign-in</li>
+                          <li>Make sure you&rsquo;re using the correct Google account</li>
                           <li>Close ALL other browser windows to avoid profile conflicts</li>
                         </ul>
                         <button
@@ -310,8 +301,7 @@ export function WorkflowPanel({
               <p className="section-tag">Step 3</p>
               <h3 className="mt-2 text-2xl font-semibold text-ink">Available jobs for your role</h3>
               <p className="mt-2 text-sm text-ink-500">
-                Live search across LinkedIn, Indeed, Foundit, and Naukri.com — exact available
-                counts per platform, no stored pool.
+                Live search across LinkedIn — exact available counts for your role, no stored pool.
               </p>
             </div>
 

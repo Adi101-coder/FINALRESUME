@@ -38,7 +38,7 @@ class MatchingEngine:
         terms = self._profile_terms(profile_data)
         relevance_score = self._relevance_score(terms, job, job_skills)
         skills_score = self._skills_score(profile_skills, job_skills, profile_text, description)
-        experience_score = self._experience_score(profile_data, description)
+        experience_score = self._experience_score(profile_data, job)
         location_score = self._location_score(profile_data.get("location", ""), job.get("location", ""))
         embedding_score = self._embedding_score(profile_data, job, profile_vec=profile_vec)
 
@@ -144,15 +144,27 @@ class MatchingEngine:
                 matched += 1
         return (matched / max(len(job_skills), 1)) * 100 + 15
 
-    def _experience_score(self, profile: dict, description: str) -> float:
+    def _experience_score(self, profile: dict, job: dict) -> float:
+        """Blend resume-experience relevance with the job's seniority requirement."""
+        from app.services.experience_level import estimate_experience_years, experience_fit
+
+        description = str(job.get("description", "") or "").lower()
         bullets = []
         for exp in profile.get("experience", []):
             bullets.extend(exp.get("bullets", []))
-        if not bullets:
-            return 40.0 if profile.get("skills") else 25.0
+        if bullets and description:
+            hits = sum(
+                1
+                for bullet in bullets
+                if any(token in bullet.lower() for token in description.split()[:80])
+            )
+            base = min(100.0, (hits / max(len(bullets), 1)) * 120 + 25)
+        else:
+            base = 40.0 if profile.get("skills") else 25.0
 
-        hits = sum(1 for bullet in bullets if any(token in bullet.lower() for token in description.split()[:80]))
-        return min(100.0, (hits / max(len(bullets), 1)) * 120 + 25)
+        years = estimate_experience_years(profile)
+        fit = experience_fit(job, years)
+        return round(0.4 * base + 0.6 * fit, 1)
 
     def _location_score(self, candidate_location: str, job_location: str) -> float:
         if not job_location:

@@ -9,7 +9,7 @@ Resume PDF → Parser → Candidate Profile (JSON)
                               ↓
                      FAISS Embeddings
                               ↓
-Job Scraper (RemoteOK/Greenhouse) → PostgreSQL
+Job Scraper (LinkedIn) → SQLite/PostgreSQL
                               ↓
                      Matching Engine (≥75% threshold)
                               ↓
@@ -25,7 +25,7 @@ Job Scraper (RemoteOK/Greenhouse) → PostgreSQL
 | Resume PDF parsing (heuristic + optional OpenAI) | ✅ |
 | Structured JSON profile | ✅ |
 | FAISS embedding store | ✅ |
-| Job scraping (RemoteOK API) | ✅ |
+| Job scraping (LinkedIn live search) | ✅ |
 | PostgreSQL models + deduplication | ✅ |
 | Multi-signal matching engine | ✅ |
 | Resume personalization (reorder, no hallucination) | ✅ |
@@ -64,17 +64,10 @@ uvicorn app.main:app --reload --app-dir .
 
 API docs: http://localhost:8000/docs
 
-<<<<<<< HEAD
 Live discovery (no static pool — every run searches selected platforms fresh):
 
 ```bash
-curl -X POST "http://localhost:8000/api/jobs/discover/1?sources=linkedin,indeed,foundit,naukri&fresh=true"
-=======
-Seed sample jobs:
-
-```bash
-python scripts/seed_jobs.py
->>>>>>> ed6bf24 (Initial commit)
+curl -X POST "http://localhost:8000/api/jobs/discover/1?sources=linkedin&fresh=true"
 ```
 
 ### 3. Frontend
@@ -95,7 +88,6 @@ UI: http://localhost:3000
 | GET | `/api/resumes/{id}` | Get candidate profile |
 | POST | `/api/jobs` | Create job manually |
 | GET | `/api/jobs` | List jobs |
-| POST | `/api/jobs/scrape/remoteok` | Scrape RemoteOK jobs |
 | POST | `/api/matching/{candidate_id}` | Score all jobs |
 | POST | `/api/matching/{candidate_id}/personalize/{job_id}` | Optimize + PDF |
 | POST | `/api/applications` | Track application |
@@ -137,9 +129,3 @@ storage/
 - Resume optimizer **never invents** experience — it only reorders and rewrites existing content.
 - Duplicate jobs are blocked via SHA-256 hash of company + title + location.
 - Respect site Terms of Service; prefer official APIs over browser automation.
-<<<<<<< HEAD
-
-
-okh first listen to me i give you api of which you wnat first remove job pool or stored static data i wnat you to search every selected platform for job and then tell me exect number of avalible jobs for that role and auto apply after that
-=======
->>>>>>> ed6bf24 (Initial commit)

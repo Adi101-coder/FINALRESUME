@@ -3,7 +3,6 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.agents.scraper.sources import IndeedScraper
 from app.database.models import Job
 from app.database.session import get_db
 from app.schemas.job import JobCreate, JobResponse
@@ -73,33 +72,6 @@ async def discover_jobs(
     logger.info("Discovery complete: %s", result)
     return result
 
-
-@router.post("/scrape/indeed", response_model=list[JobResponse])
-async def scrape_indeed(
-    query: str = Query(default="software engineer"),
-    location: str = Query(default="remote"),
-    db: Session = Depends(get_db),
-):
-    from app.services.job_normalize import prepare_job_row
-
-    scraper = IndeedScraper()
-    logger.info("Scraping Indeed with query=%r location=%r", query, location)
-    scraped = await scraper.fetch_jobs(query=query, location=location, limit=50)
-    logger.info("Indeed returned %d jobs", len(scraped))
-    created_jobs: list[Job] = []
-    for item in scraped:
-        dedup_hash = job_dedup_hash(item["company"], item["title"], item["location"])
-        if db.query(Job).filter(Job.dedup_hash == dedup_hash).first():
-            continue
-        row = prepare_job_row(item, dedup_hash)
-        db.add(row)
-        created_jobs.append(row)
-
-    db.commit()
-    for job in created_jobs:
-        db.refresh(job)
-    logger.info("Stored %d new jobs from Indeed", len(created_jobs))
-    return created_jobs
 
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job(job_id: int, db: Session = Depends(get_db)):

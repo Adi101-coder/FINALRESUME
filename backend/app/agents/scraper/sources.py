@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -74,6 +75,22 @@ async def _get_text(client: httpx.AsyncClient, url: str, *, headers: dict | None
     response = await client.get(url, headers=merged, follow_redirects=True)
     response.raise_for_status()
     return response.text
+
+
+async def _get_text_retry(
+    client: httpx.AsyncClient, url: str, *, headers: dict | None = None, attempts: int = 3, pause: float = 6.0
+) -> str:
+    """GET with backoff — LinkedIn throttles repeated guest calls with connect timeouts."""
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return await _get_text(client, url, headers=headers)
+        except Exception as exc:  # noqa: BLE001 — retry any transport/HTTP failure
+            last_exc = exc
+            logger.warning("LinkedIn request failed (attempt %d/%d): %s", attempt + 1, attempts, exc)
+            if attempt < attempts - 1:
+                await asyncio.sleep(pause * (attempt + 1))
+    raise last_exc  # type: ignore[misc]
 
 
 _NAUKRI_PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
@@ -519,12 +536,6 @@ class LinkedInScraper(BaseJobScraper):
         return jobs, self.last_total_available
 
     async def fetch_jobs(self, query: str = "", location: str = "", limit: int = 50) -> list[dict]:
-        keywords = quote_plus(query or "software engineer")
-        loc = quote_plus(location or "Remote")
-        url = (
-            "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-            f"?keywords={keywords}&location={loc}&start=0"
-        )
         logger.info("LinkedIn fetch: query=%r location=%r", query or "(default)", location or "(default)")
 
         headers = dict(DEFAULT_HEADERS)
@@ -536,45 +547,60 @@ class LinkedInScraper(BaseJobScraper):
         jobs: list[dict] = []
         self.last_total_available = None
         self.last_error = None
+        seen_urls: set[str] = set()
+        page_size = 10
+        max_pages = max(1, (limit + page_size - 1) // page_size)
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                html = await _get_text(client, url, headers=headers)
-            # Guest API pages sometimes embed a total; parse best-effort.
-            total = _parse_total_count(html)
-            if total is not None:
-                self.last_total_available = total
-            soup = BeautifulSoup(html, "lxml")
-            seen_urls: set[str] = set()
-            for card in soup.select("li, div.base-card")[: limit * 4]:
-                title_el = card.select_one("h3, span.sr-only")
-                company_el = card.select_one("h4, a.hidden-nested-link")
-                loc_el = card.select_one("span.job-search-card__location")
-                link_el = card.select_one("a[href*='/jobs/view/']")
-                if not title_el or not link_el:
-                    continue
-                title = title_el.get_text(strip=True)
-                company = company_el.get_text(strip=True) if company_el else "LinkedIn Employer"
-                loc_text = loc_el.get_text(strip=True) if loc_el else (location or "Remote")
-                href = link_el.get("href", "")
-                apply_url = href.split("?")[0] if href.startswith("http") else f"https://www.linkedin.com{href}"
-                if apply_url in seen_urls:
-                    continue
-                seen_urls.add(apply_url)
-                if query and not _matches_query(f"{title} {company}", query):
-                    continue
-                jobs.append(
-                    _job(
-                        title=title,
-                        company=company,
-                        location=loc_text,
-                        apply_url=apply_url,
-                        source=self.source_name,
-                        application_type="linkedin",
-                        easy_apply="easy" in href.lower(),
+                for page in range(max_pages):
+                    keywords = quote_plus(query or "software engineer")
+                    loc = quote_plus(location or "Remote")
+                    url = (
+                        "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
+                        f"?keywords={keywords}&location={loc}&start={page * page_size}&f_AL=true"
                     )
-                )
-                if len(jobs) >= limit:
-                    break
+                    html = await _get_text_retry(client, url, headers=headers)
+                    if page == 0:
+                        total = _parse_total_count(html)
+                        if total is not None:
+                            self.last_total_available = total
+                    soup = BeautifulSoup(html, "lxml")
+                    cards = soup.select("li, div.base-card")
+                    if not cards:
+                        break
+                    parsed_any = False
+                    for card in cards:
+                        title_el = card.select_one("h3, span.sr-only")
+                        link_el = card.select_one("a[href*='/jobs/view/']")
+                        if not title_el or not link_el:
+                            continue
+                        company_el = card.select_one("h4, a.hidden-nested-link")
+                        loc_el = card.select_one("span.job-search-card__location")
+                        title = title_el.get_text(strip=True)
+                        company = company_el.get_text(strip=True) if company_el else "LinkedIn Employer"
+                        loc_text = loc_el.get_text(strip=True) if loc_el else (location or "Remote")
+                        href = link_el.get("href", "")
+                        apply_url = href.split("?")[0] if href.startswith("http") else f"https://www.linkedin.com{href}"
+                        if apply_url in seen_urls:
+                            continue
+                        seen_urls.add(apply_url)
+                        is_easy_apply = "Easy Apply" in card.get_text(" ", strip=True)
+                        jobs.append(
+                            _job(
+                                title=title,
+                                company=company,
+                                location=loc_text,
+                                apply_url=apply_url,
+                                source=self.source_name,
+                                application_type="linkedin",
+                                easy_apply=is_easy_apply,
+                            )
+                        )
+                        parsed_any = True
+                        if len(jobs) >= limit:
+                            break
+                    if not parsed_any or len(jobs) >= limit:
+                        break
         except Exception as exc:
             self.last_error = f"LinkedIn fetch failed ({exc}). Set LINKEDIN_SESSION_COOKIE for reliability."
             logger.warning("LinkedIn fetch failed (set LINKEDIN_SESSION_COOKIE for better results): %s", exc)
@@ -583,6 +609,49 @@ class LinkedInScraper(BaseJobScraper):
         if jobs:
             self.last_error = None
         return jobs
+
+
+_LINKEDIN_POSTING_ID_RE = re.compile(r"(\d{6,})/?$")
+
+
+async def enrich_linkedin_descriptions(
+    jobs: list[dict], *, max_fetch: int = 15, concurrency: int = 5, timeout: float = 12.0
+) -> int:
+    """Attach full descriptions via LinkedIn's guest jobPosting API.
+
+    Guest search cards carry no description text, leaving match scoring with
+    only the title to work from. Best-effort: failures are silently skipped.
+    """
+    targets = [j for j in jobs if not (j.get("description") or "").strip()][:max_fetch]
+    if not targets:
+        return 0
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _one(client: httpx.AsyncClient, job: dict) -> None:
+        match = _LINKEDIN_POSTING_ID_RE.search(job.get("apply_url", ""))
+        if not match:
+            return
+        try:
+            async with sem:
+                resp = await client.get(
+                    f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{match.group(1)}",
+                    headers=DEFAULT_HEADERS,
+                )
+            if resp.status_code != 200:
+                return
+            soup = BeautifulSoup(resp.text, "lxml")
+            desc_el = soup.select_one(".show-more-less-html__markup, .description__text")
+            text = desc_el.get_text(" ", strip=True) if desc_el else ""
+            if text:
+                job["description"] = text[:4000]
+        except Exception as exc:  # noqa: BLE001 — enrichment must never break discovery
+            logger.debug("jobPosting enrichment skipped for %s: %s", job.get("apply_url"), exc)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        await asyncio.gather(*[_one(client, job) for job in targets])
+    enriched = sum(1 for j in targets if (j.get("description") or "").strip())
+    logger.info("LinkedIn description enrichment: %d/%d", enriched, len(targets))
+    return enriched
 
 
 class GlassdoorScraper(BaseJobScraper):

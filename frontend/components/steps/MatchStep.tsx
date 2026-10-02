@@ -14,15 +14,6 @@ import {
 
 const PLATFORMS = [
   { key: "linkedin", label: "LinkedIn", needsLoginForSearch: true },
-  { key: "indeed", label: "Indeed", needsLoginForSearch: false },
-  { key: "foundit", label: "Foundit", needsLoginForSearch: false },
-  { key: "naukri", label: "Naukri.com", needsLoginForSearch: false },
-  { key: "ziprecruiter", label: "ZipRecruiter", needsLoginForSearch: false },
-  { key: "glassdoor", label: "Glassdoor", needsLoginForSearch: false },
-  { key: "greenhouse", label: "Greenhouse", needsLoginForSearch: false },
-  { key: "remotive", label: "Remotive", needsLoginForSearch: false },
-  { key: "remoteok", label: "RemoteOK", needsLoginForSearch: false },
-  { key: "arbeitnow", label: "Arbeitnow", needsLoginForSearch: false },
 ];
 
 const JOB_TYPES = [
@@ -46,6 +37,8 @@ type Props = {
   remoteType: string;
   onRemoteTypeChange: (t: string) => void;
   onAddToQueue: (match: MatchResult) => void;
+  onRemoveFromQueue: (jobId: number) => void;
+  queuedJobIds: number[];
 };
 
 export function MatchStep({
@@ -62,6 +55,8 @@ export function MatchStep({
   remoteType,
   onRemoteTypeChange,
   onAddToQueue,
+  onRemoveFromQueue,
+  queuedJobIds,
 }: Props) {
   const [discovery, setDiscovery] = useState<DiscoveryResult | null>(null);
   const [matches, setMatches] = useState<MatchResult[]>([]);
@@ -110,7 +105,7 @@ export function MatchStep({
         try {
           const s = await getBotStatus(candidateId);
           if (s.state === "error") {
-            onError(s.error || `${platform} login failed on server. Free boards work without login.`);
+            onError(s.error || `${platform} login failed on server. Check the backend logs and retry.`);
             setLoginPlatform(null);
             setLoginBusy(false);
             return;
@@ -122,7 +117,7 @@ export function MatchStep({
       }
       if (!isLocal) {
         setInfo(
-          `${platform} login started on the server. On the hosted version, browser login doesn't work (no display). Run locally for full login support, or use free boards (Remotive, RemoteOK, Arbeitnow, Greenhouse, ZipRecruiter) which work without login.`,
+          `${platform} login started on the server. On the hosted version, browser login doesn't work (no display) — run the backend locally to complete the LinkedIn login.`,
         );
       } else {
         setInfo(`Browser opened for ${platform}. Finish sign-in there, then press "Login done". You stay on this page.`);
@@ -182,7 +177,7 @@ export function MatchStep({
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold text-ink">View Matches</h1>
-          <p className="text-ink-500">Pick platforms, log in only where needed, then discover.</p>
+          <p className="text-ink-500">Log in to LinkedIn once, then discover live jobs.</p>
         </div>
         <button onClick={handleDiscover} disabled={discovering || loading} className="btn-dark">
           {discovering ? "Searching…" : "Discover Jobs"}
@@ -285,7 +280,9 @@ export function MatchStep({
           onChange={(e) => setThreshold(Number(e.target.value))}
           className="w-full h-2 bg-ink-100 rounded-lg appearance-none cursor-pointer accent-ink"
         />
-        <p className="text-xs text-ink-400 mt-1">Showing {filteredMatches.length} of {matches.length} matches</p>
+        <p className="text-xs text-ink-400 mt-1">
+          Showing {filteredMatches.length} of {matches.length} matches · {queuedJobIds.length} selected for review
+        </p>
       </div>
 
       {filteredMatches.length === 0 && matches.length > 0 ? (
@@ -295,7 +292,14 @@ export function MatchStep({
       ) : (
         <div className="space-y-4">
           {filteredMatches.map((match) => (
-            <MatchCard key={match.job_id} match={match} profile={profile} onAddToQueue={onAddToQueue} />
+            <MatchCard
+              key={match.job_id}
+              match={match}
+              profile={profile}
+              onAddToQueue={onAddToQueue}
+              onRemoveFromQueue={onRemoveFromQueue}
+              queued={queuedJobIds.includes(match.job_id)}
+            />
           ))}
         </div>
       )}
@@ -314,7 +318,19 @@ export function MatchStep({
   );
 }
 
-function MatchCard({ match, profile, onAddToQueue }: { match: MatchResult; profile: any; onAddToQueue: (match: MatchResult) => void }) {
+function MatchCard({
+  match,
+  profile,
+  onAddToQueue,
+  onRemoveFromQueue,
+  queued,
+}: {
+  match: MatchResult;
+  profile: any;
+  onAddToQueue: (match: MatchResult) => void;
+  onRemoveFromQueue: (jobId: number) => void;
+  queued: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const scoreBreakdown = [
     { label: "Skills", score: match.skills_score, color: "bg-green-500" },
@@ -323,7 +339,11 @@ function MatchCard({ match, profile, onAddToQueue }: { match: MatchResult; profi
     { label: "Location", score: match.location_score, color: "bg-orange-500" },
   ];
   return (
-    <div className="rounded-2xl border border-ink-200 bg-white p-5 shadow-sm">
+    <div
+      className={`rounded-2xl border p-5 shadow-sm transition-colors ${
+        queued ? "border-green-500 bg-green-50/50 ring-1 ring-green-500/40" : "border-ink-200 bg-white"
+      }`}
+    >
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
@@ -332,6 +352,11 @@ function MatchCard({ match, profile, onAddToQueue }: { match: MatchResult; profi
               match.score >= 85 ? "bg-green-100 text-green-800" :
               match.score >= 75 ? "bg-blue-100 text-blue-800" : "bg-amber-100 text-amber-800"
             }`}>{match.score}%</span>
+            {queued && (
+              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-600 text-white">
+                ✓ Selected
+              </span>
+            )}
           </div>
           <p className="mt-1 text-sm text-ink-500">{match.company} · {match.location}</p>
         </div>
@@ -340,7 +365,19 @@ function MatchCard({ match, profile, onAddToQueue }: { match: MatchResult; profi
             {expanded ? "Hide" : "Score ↓"}
           </button>
           <a href={match.apply_url} target="_blank" rel="noreferrer" className="btn-outline text-sm">View ↗</a>
-          <button onClick={() => onAddToQueue(match)} className="btn-dark text-sm">+ Queue</button>
+          {queued ? (
+            <button
+              onClick={() => onRemoveFromQueue(match.job_id)}
+              className="btn-outline text-sm border-green-600 bg-green-600 text-white hover:bg-green-700"
+              title="Click to remove from review queue"
+            >
+              ✓ Queued — remove
+            </button>
+          ) : (
+            <button onClick={() => onAddToQueue(match)} className="btn-dark text-sm">
+              + Queue
+            </button>
+          )}
         </div>
       </div>
       {expanded && (

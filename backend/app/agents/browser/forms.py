@@ -21,6 +21,39 @@ def _last_name(full_name: str) -> str:
     return " ".join(parts[1:]) if len(parts) > 1 else ""
 
 
+def clean_location(profile: dict) -> str:
+    """Repair locations like 'Aditya Goyal\\nJaipur, India' → 'Jaipur, India'.
+
+    Resume parsing sometimes prepends the candidate's name (and newlines) to
+    the location; LinkedIn rejects that in its Easy Apply location field.
+    """
+    raw = str(profile.get("location") or "")
+    name = str(profile.get("name") or "").strip()
+    lines = [ln.strip() for ln in raw.replace("\r", "\n").split("\n") if ln.strip()]
+    lines = [ln for ln in lines if not name or ln.lower() != name.lower()]
+    loc = " ".join(lines) if lines else ""
+    loc = loc.split("|")[0].strip()
+    loc = re.sub(r"\s+", " ", loc)
+    if not loc or loc.lower() == name.lower():
+        loc = "Jaipur, India"
+    return loc
+
+
+def _select_typeahead(page: Page) -> bool:
+    """Select the first visible autocomplete suggestion (LinkedIn location box)."""
+    try:
+        opts = page.locator(
+            '[role="option"]:visible, .artdeco-typeahead-result:visible, '
+            'ul[role="listbox"] li:visible'
+        )
+        if opts.count() > 0:
+            opts.first.click(timeout=2000)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _try_fill(locator: Locator, value: str) -> bool:
     if not value:
         return False
@@ -42,7 +75,8 @@ def fill_standard_fields(page: Page, profile: dict) -> int:
     name = profile.get("name", "")
     email = profile.get("email", "")
     phone = profile.get("phone", "")
-    location = profile.get("location", "")
+    location = clean_location(profile)
+    city = location.split(",")[0].strip()
     linkedin = profile.get("linkedin", "")
     github = profile.get("github", "") or profile.get("portfolio", "")
 
@@ -58,15 +92,26 @@ def fill_standard_fields(page: Page, profile: dict) -> int:
         ("input[placeholder*='phone' i]", phone),
         ("input[placeholder*='name' i]", name),
         ("input[name*='location' i]", location),
-        ("input[name*='city' i]", location),
+        ("input[name*='city' i]", city),
+        ("input[placeholder*='location' i]", location),
+        ("input[placeholder*='city' i]", city),
+        ("input[aria-label*='location' i]", location),
+        ("input[aria-label*='city' i]", city),
         ("input[name*='linkedin' i]", linkedin),
         ("input[name*='github' i]", github),
         ("textarea[name*='cover' i]", profile.get("summary", "")[:2000]),
     ]
 
+    location_filled = False
     for selector, value in pairs:
         if _try_fill(page.locator(selector), value):
             filled += 1
+            if "location" in selector or "city" in selector:
+                location_filled = True
+
+    if location_filled:
+        page.wait_for_timeout(900)
+        _select_typeahead(page)
 
     # Label-based fills (Playwright get_by_label)
     label_map = {
@@ -106,9 +151,12 @@ def fill_custom_questions(page: Page, profile: dict) -> int:
         (r"willing to relocate", "Yes"),
         (r"remote|work from home", "Yes"),
         (r"years?.{0,5}experience|how many years", str(years)),
-        (r"expected salary|desired salary|salary expectation", profile.get("salary_expectation", "Negotiable")),
+        (r"expected salary|desired salary|salary expectation|expected ctc", "Negotiable"),
         (r"linkedin profile|linkedin url", profile.get("linkedin", "")),
         (r"github|portfolio|website", profile.get("github", "") or profile.get("portfolio", "")),
+        (r"how soon|start date|available to start|availability|notice period", "Immediately"),
+        (r"how did you hear", "LinkedIn"),
+        (r"gender|race|ethnicity|veteran|military status|disability", "Prefer not to answer"),
     ]
 
     for skill in skills[:8]:
@@ -138,6 +186,12 @@ def fill_custom_questions(page: Page, profile: dict) -> int:
 
     # Generic blank required text inputs in modals
     try:
+        skills = profile.get("skills") or []
+        blurb = (
+            f"I'm a strong match for this role with hands-on experience in "
+            f"{', '.join(skills[:4]) or 'Python and machine learning'}. "
+            "My resume has further detail and I'd welcome the chance to contribute quickly."
+        )
         for inp in page.locator("input[required]:not([type='hidden']), textarea[required]").all()[:6]:
             if not inp.is_visible():
                 continue
@@ -150,7 +204,10 @@ def fill_custom_questions(page: Page, profile: dict) -> int:
                 inp.fill(str(years))
                 filled += 1
             elif "city" in hint or "location" in hint:
-                inp.fill(profile.get("location", ""))
+                inp.fill(clean_location(profile))
+                filled += 1
+            elif any(k in hint for k in ("why", "describe", "tell us", "interested", "motivat", "cover")):
+                inp.fill(blurb)
                 filled += 1
     except Exception:
         pass

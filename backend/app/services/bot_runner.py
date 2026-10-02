@@ -158,11 +158,6 @@ class BotRunnerService:
 
     LOGIN_URLS = {
         "linkedin": "https://www.linkedin.com/login",
-        "indeed": "https://secure.indeed.com/auth/login",
-        "foundit": "https://www.foundit.in/",
-        "naukri": "https://www.naukri.com/nlogin/login",
-        "ziprecruiter": "https://www.ziprecruiter.com/auth/login",
-        "glassdoor": "https://www.glassdoor.com/profile/login_input.htm",
     }
 
     def start_login(self, candidate_id: int, *, platform: str) -> dict:
@@ -385,7 +380,7 @@ class BotRunnerService:
         if not self._playwright_available():
             raise RuntimeError("Playwright not installed. Run: playwright install chromium")
 
-        if platform not in ("linkedin", "indeed", "foundit", "naukri", "ziprecruiter", "glassdoor"):
+        if platform not in PLATFORMS:
             raise RuntimeError(f"Unsupported platform: {platform}")
 
         with self._lock:
@@ -476,6 +471,10 @@ class BotRunnerService:
                 raise RuntimeError(f"Candidate {run.candidate_id} not found")
 
             profile = candidate.profile_json or {}
+            if profile.get("location"):
+                from app.agents.browser.forms import clean_location
+
+                profile = {**profile, "location": clean_location(profile)}
             resume_path = resolve_resume_path(db, run.candidate_id)
             config = get_or_create_config(db, run.candidate_id)
             job_titles = config.job_titles or ["Software Developer", "Frontend Developer"]
@@ -516,6 +515,20 @@ class BotRunnerService:
                 runner.on_apply_result = on_result
 
                 if jobs:
+                    # LinkedIn-only build: drop queue jobs that point at other boards.
+                    if platform == "linkedin":
+                        linkedin_jobs = [
+                            j
+                            for j in jobs
+                            if "linkedin.com" in str(j.get("apply_url") or j.get("url") or "")
+                        ]
+                        dropped = len(jobs) - len(linkedin_jobs)
+                        if dropped:
+                            self._log(
+                                run,
+                                f"Skipped {dropped} non-LinkedIn job(s) from the review queue.",
+                            )
+                        jobs = linkedin_jobs
                     # Use specific jobs from review queue
                     self._log(run, f"Applying to {len(jobs)} specific jobs from review queue")
                     runner.apply_many(jobs, profile, resume_path, delay_sec=delay_sec)

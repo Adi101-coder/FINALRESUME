@@ -63,7 +63,7 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
         apply_url: match.apply_url,
         job_id: match.job_id,
       }));
-      await startBot(candidateId, { platform: config?.job_titles?.[0] || "linkedin", continuous: false, batchSize: 1, jobs });
+      await startBot(candidateId, { platform: "linkedin", continuous: false, batchSize: 1, jobs });
     } catch (err) {
       setBotRunning(false);
     }
@@ -192,7 +192,7 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
           <div className="text-4xl mb-4">📋</div>
           <h3 className="text-xl font-semibold text-ink mb-2">No jobs in review queue</h3>
           <p className="text-ink-500 mb-6">
-            Go back to Matches, select jobs above your threshold, then click "Review & Approve"
+            Go back to Matches, select jobs above your threshold, then click &ldquo;Review &amp; Approve&rdquo;
           </p>
         </div>
       )}

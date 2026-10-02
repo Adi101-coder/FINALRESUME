@@ -44,9 +44,14 @@ def match_candidate_jobs(candidate_id: int, db: Session = Depends(get_db)):
         step_done("MATCH_JOBS", returned=0, passed=0)
         return []
 
-    jobs = db.query(Job).filter(Job.id.in_(candidate_job_ids)).all()
+    jobs = (
+        db.query(Job)
+        .filter(Job.id.in_(candidate_job_ids))
+        .filter(Job.apply_url.like("%linkedin.com%"))
+        .all()
+    )
     logger.info(
-        "Matching candidate_id=%s against %d live platform jobs (no shared pool)",
+        "Matching candidate_id=%s against %d LinkedIn jobs (no shared pool)",
         candidate_id,
         len(jobs),
     )
