@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -58,15 +59,35 @@ def root() -> dict:
     }
 
 
+def _disk_info() -> dict:
+    """Non-secret diagnostics: is the Render persistent disk mounted, and where do we write?"""
+    mounted = False
+    try:
+        for line in Path("/proc/mounts").read_text().splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "/var/data":
+                mounted = True
+                break
+    except Exception:
+        pass
+    db = settings.database_url
+    if db.startswith("sqlite"):
+        db = f"sqlite:{db.split('///')[-1]}" if "///" in db else "sqlite:(relative)"
+    else:
+        db = db.split("@")[-1]
+    return {"var_data_mounted": mounted, "storage": str(settings.storage_path), "db": db}
+
+
 @app.get("/health")
 def health() -> dict:
     return {
         "status": "ok",
         "app": settings.app_name,
         "api_version": 2,
-        "build": "2026-10-03.7",
+        "build": "2026-10-03.8",
         "embedding_fallback": settings.use_embedding_fallback,
         "cors_origins": settings.cors_origin_list,
+        "disk": _disk_info(),
         "routes": [
             "/api/resumes/upload",
             "/api/jobs/discover/{candidate_id}",
