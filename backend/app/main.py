@@ -64,7 +64,7 @@ def health() -> dict:
         "status": "ok",
         "app": settings.app_name,
         "api_version": 2,
-        "build": "2026-10-03.6",
+        "build": "2026-10-03.7",
         "embedding_fallback": settings.use_embedding_fallback,
         "cors_origins": settings.cors_origin_list,
         "routes": [
