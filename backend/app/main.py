@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -75,7 +76,16 @@ def _disk_info() -> dict:
         db = f"sqlite:{db.split('///')[-1]}" if "///" in db else "sqlite:(relative)"
     else:
         db = db.split("@")[-1]
-    return {"var_data_mounted": mounted, "storage": str(settings.storage_path), "db": db}
+    raw_db = os.environ.get("DATABASE_URL")
+    if raw_db and not raw_db.startswith("sqlite"):
+        raw_db = "set(redacted)"
+    raw_storage = os.environ.get("STORAGE_PATH")
+    return {
+        "var_data_mounted": mounted,
+        "storage": str(settings.storage_path),
+        "db": db,
+        "env": {"STORAGE_PATH": raw_storage, "DATABASE_URL": raw_db},
+    }
 
 
 @app.get("/health")
@@ -84,7 +94,7 @@ def health() -> dict:
         "status": "ok",
         "app": settings.app_name,
         "api_version": 2,
-        "build": "2026-10-03.8",
+        "build": "2026-10-03.9",
         "embedding_fallback": settings.use_embedding_fallback,
         "cors_origins": settings.cors_origin_list,
         "disk": _disk_info(),
