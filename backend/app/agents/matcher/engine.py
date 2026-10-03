@@ -88,30 +88,39 @@ class MatchingEngine:
         return [self.score(profile, job, profile_vec=profile_vec) for job in jobs]
 
     def _profile_terms(self, profile: dict) -> list[str]:
-        """Role/field/skill phrases that signal relevance to this resume."""
+        """Role/field/skill phrases that signal relevance to this resume.
+
+        Hygiene matters: relevance divides hits by the term count, so noise
+        terms (glued multi-role strings, 2-letter skills, full degree lines)
+        could never match a title and capped every score below threshold.
+        """
+        from app.services.profile_queries import _shorten_role
+
         terms: set[str] = set()
         for role in profile.get("preferred_roles") or []:
-            role = str(role).lower().strip()
+            role = _shorten_role(str(role)).lower().strip()
             if role:
                 terms.add(role)
         for exp in profile.get("experience") or []:
-            role = str(exp.get("role", "")).lower().strip()
+            role = _shorten_role(str(exp.get("role", ""))).lower().strip()
             if role:
                 terms.add(role)
         for edu in profile.get("education") or []:
-            for key in ("field", "degree"):
-                value = str(edu.get(key, "")).lower().strip()
-                if len(value) >= 3:
-                    terms.add(value)
+            field = str(edu.get("field", "")).lower().strip()
+            if len(field) >= 4:
+                terms.add(field)
+            degree = str(edu.get("degree", "")).lower().strip()
+            if 4 <= len(degree) <= 30:
+                terms.add(degree)
         for skill in profile.get("skills") or []:
             skill = str(skill).lower().strip()
-            if skill:
+            if len(skill) >= 4:
                 terms.add(skill)
         for keyword in profile.get("keywords") or []:
-            keyword = str(keyword).lower().strip()
-            if keyword:
+            keyword = _shorten_role(str(keyword)).lower().strip()
+            if len(keyword) >= 4:
                 terms.add(keyword)
-        return sorted(t for t in terms if len(t) >= 3)
+        return sorted(t for t in terms if len(t) >= 4)
 
     def _relevance_score(self, terms: list[str], job: dict, job_skills: list[str]) -> float:
         """How well the job title/description matches the resume's role + skill vocabulary."""
@@ -129,6 +138,10 @@ class MatchingEngine:
         skills_hits = sum(1 for skill in job_skills if skill in terms)
         skills_pct = (skills_hits / max(len(job_skills), 1)) * 100 if job_skills else 0.0
 
+        if not job_skills:
+            # Guest feeds (LinkedIn search cards) carry no job skills — that
+            # slice would always be 0. Spend it on the description instead.
+            return round(0.5 * title_pct + 0.5 * desc_pct, 1)
         return round(0.5 * title_pct + 0.3 * desc_pct + 0.2 * skills_pct, 1)
 
     def _skills_score(

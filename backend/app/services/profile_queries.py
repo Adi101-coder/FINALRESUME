@@ -22,6 +22,19 @@ def _clean_term(value: str) -> str:
     return value[:80]
 
 
+def _shorten_role(role: str) -> str:
+    """'AI Freelancer – LLM Evaluation & Machine Learning' → 'AI Freelancer'.
+
+    Server-side job search needs a short keyword; the full parsed role string
+    (titles glued with separators) returns ~0 results.
+    """
+    core = re.split(r"\s+[–—|-]\s+|\s+\|\s+|\s+/\s+|\s+:\s+", role)[0].strip()
+    core = core.split(",")[0].strip()
+    if len(core) > 40:
+        core = core[:40].rsplit(" ", 1)[0]
+    return core or role[:40]
+
+
 STOP_WORDS = {
     "with", "that", "this", "have", "years", "built", "full",
     "from", "into", "your", "will", "work", "team", "using",
@@ -52,12 +65,12 @@ def build_search_queries(profile: dict, max_queries: int = 10) -> list[str]:
     queries: list[str] = []
 
     for role in profile.get("preferred_roles") or []:
-        term = _clean_term(str(role))
+        term = _clean_term(_shorten_role(str(role)))
         if term and not _is_junk_term(term):
             queries.append(term)
 
     for exp in profile.get("experience") or []:
-        role = _clean_term(str(exp.get("role", "")))
+        role = _clean_term(_shorten_role(str(exp.get("role", ""))))
         if role and not _is_junk_term(role):
             queries.append(role)
         company = _clean_term(str(exp.get("company", "")))
@@ -69,7 +82,7 @@ def build_search_queries(profile: dict, max_queries: int = 10) -> list[str]:
             queries.append(term)
 
     for keyword in (profile.get("keywords") or [])[:8]:
-        term = _clean_term(str(keyword))
+        term = _clean_term(_shorten_role(str(keyword)))
         if term and not _is_junk_term(term):
             queries.append(term)
 

@@ -632,6 +632,9 @@ async def enrich_linkedin_descriptions(
     if not targets:
         return 0
     sem = asyncio.Semaphore(concurrency)
+    headers = dict(DEFAULT_HEADERS)
+    if settings.linkedin_session_cookie:
+        headers["Cookie"] = settings.linkedin_session_cookie
 
     async def _one(client: httpx.AsyncClient, job: dict) -> None:
         match = _LINKEDIN_POSTING_ID_RE.search(job.get("apply_url", ""))
@@ -641,7 +644,7 @@ async def enrich_linkedin_descriptions(
             async with sem:
                 resp = await client.get(
                     f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{match.group(1)}",
-                    headers=DEFAULT_HEADERS,
+                    headers=headers,
                 )
             if resp.status_code != 200:
                 return

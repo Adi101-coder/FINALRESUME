@@ -191,6 +191,15 @@ class ResumeParser:
 
         keywords = list({*found_skills, *preferred_roles})
 
+        if not preferred_roles:
+            derived = [
+                exp.role.strip()
+                for exp in experience
+                if exp.role and 3 < len(exp.role.strip()) < 70
+            ]
+            preferred_roles = list(dict.fromkeys(derived))[:5]
+            keywords = list({*found_skills, *preferred_roles})
+
         return CandidateProfile(
             name=name,
             email=email_match.group(0) if email_match else "",
@@ -223,15 +232,25 @@ class ResumeParser:
         return first_line[:50]
 
     def _extract_location(self, text: str) -> str:
-        location_patterns = [
-            r"(?:location|based in|located in|city|address)\s*[:\-]\s*([^\n]+)",
-            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2,})",
-            r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z][a-z]+)",
-        ]
-        for pattern in location_patterns:
-            match = re.search(pattern, text, re.I)
-            if match:
-                return match.group(1).strip()
+        # Only the header block (first lines) — never glue name+city across lines.
+        head = "\n".join(text.splitlines()[:6])
+        for seg in re.split(r"[|\n]", head):
+            seg = seg.strip()
+            if (
+                "," in seg
+                and len(seg) <= 60
+                and re.fullmatch(r"[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)*\s*,\s*[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)*", seg)
+                and not re.search(r"\d|@|https?", seg)
+            ):
+                return seg
+        m = re.search(
+            r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", head
+        )
+        if m:
+            return m.group(1)
+        m = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*,\s*[A-Z]{2,})\b", head)
+        if m:
+            return m.group(1)
         return ""
 
     def _extract_notice_period(self, text: str) -> str:
@@ -258,14 +277,32 @@ class ResumeParser:
                 roles.extend([r.strip() for r in re.split(r"[,/|;]", role_text) if r.strip()])
         return list(dict.fromkeys(roles))[:5]
 
+    @staticmethod
+    def _header_variants() -> list[str]:
+        out: list[str] = []
+        for variants in ResumeParser.SECTION_HEADERS.values():
+            out.extend(variants)
+        return out
+
+    def _is_section_header_line(self, line: str) -> bool:
+        """True for section-header lines like 'Experience' or 'Achievements & Honors'."""
+        norm = line.strip().rstrip(":：").lower()
+        if not norm or len(norm) > 40:
+            return False
+        for h in self._header_variants():
+            if norm == h or norm.startswith(h + " ") or norm.startswith(h + " &") or norm.startswith(h + " and"):
+                return True
+        return False
+
     def _split_sections(self, text: str) -> dict[str, str]:
         sections = {}
-        lower_text = text.lower()
         header_positions = []
 
         for section_type, headers in self.SECTION_HEADERS.items():
             for header in headers:
-                pattern = rf"(?i)^\s*{re.escape(header)}\s*[:\n]"
+                # Header line: variant at line start, optionally with a short
+                # decorated tail ("Achievements & Honors", "Skills: …").
+                pattern = rf"(?i)^\s*{re.escape(header)}[^\n]{{0,40}}$"
                 for match in re.finditer(pattern, text, re.M):
                     header_positions.append((match.start(), section_type, header))
 
@@ -301,6 +338,8 @@ class ResumeParser:
 
     def _parse_experience_entry(self, entry: str) -> ExperienceItem:
         lines = [l.strip() for l in entry.splitlines() if l.strip()]
+        while lines and self._is_section_header_line(lines[0]):
+            lines = lines[1:]
         if not lines:
             return ExperienceItem()
 
@@ -309,31 +348,52 @@ class ResumeParser:
         location = ""
         start_date = ""
         end_date = ""
-        bullets = []
-
-        first_line = lines[0]
-        parts = re.split(r"\s*[-|•]\s*|\s{2,}|\t", first_line)
-        parts = [p.strip() for p in parts if p.strip()]
-
-        if len(parts) >= 2:
-            role = parts[0]
-            company = parts[1]
-            if len(parts) >= 3:
-                location = parts[2]
-        else:
-            company = first_line
+        bullets: list[str] = []
 
         date_pattern = "|".join(self.DATE_PATTERNS)
         date_re = re.compile(date_pattern, re.I)
+
+        first_line = lines[0]
+        remote_m = re.match(r"^(.*?)\s+(Remote|Hybrid|On[- ]?site)\b(.*)$", first_line, re.I)
+        if remote_m:
+            company = remote_m.group(1).strip() or first_line
+            location = (remote_m.group(2) + " " + (remote_m.group(3) or "")).strip()
+        else:
+            parts = re.split(r"\s{2,}|\s*\|\s*|\t", first_line)
+            parts = [p.strip() for p in parts if p.strip()]
+            if parts:
+                company = parts[0].lstrip("•-* ")
+            if len(parts) >= 2:
+                location = parts[1]
+
+        # Second non-bullet line = role line (title ± dates ± location)
+        role_line = ""
+        for line in lines[1:]:
+            if self._BULLET_RE.match(line):
+                continue
+            role_line = line
+            break
+        if role_line:
+            without_dates = date_re.sub("", role_line)
+            role = re.sub(r"\s*[,;|–—-]\s*$", "", without_dates).strip(" -,–—|")
+            role = re.sub(r"\s{2,}", " ", role)
+            if not location:
+                loc_parts = re.split(r"\s{2,}|\s*\|\s*", role_line)
+                if len(loc_parts) >= 2 and not date_re.search(loc_parts[-1]):
+                    location = loc_parts[-1].strip()
+
         dates = date_re.findall(entry)
-        if dates:
-            start_date = dates[0] if len(dates) > 0 else ""
-            end_date = dates[1] if len(dates) > 1 else ""
+        year_dates = [d for d in dates if re.search(r"(?:19|20)\d{2}", d)]
+        if year_dates:
+            start_date = year_dates[0]
+            end_date = year_dates[1] if len(year_dates) > 1 else (dates[dates.index(year_dates[0]) + 1] if dates else "")
+        elif dates:
+            start_date = dates[0]
 
         for line in lines[1:]:
-            if re.match(r"^[\-\*•]\s+", line):
-                bullets.append(re.sub(r"^[\-\*•]\s+", "", line))
-            elif line and not re.search(date_pattern, line, re.I):
+            if self._BULLET_RE.match(line):
+                bullets.append(self._BULLET_RE.sub("", line).strip())
+            elif line != role_line and not date_re.search(line):
                 bullets.append(line)
 
         return ExperienceItem(
@@ -358,33 +418,40 @@ class ResumeParser:
 
     def _parse_project_entry(self, entry: str) -> ProjectItem:
         lines = [l.strip() for l in entry.splitlines() if l.strip()]
+        while lines and self._is_section_header_line(lines[0]):
+            lines = lines[1:]
         if not lines:
             return ProjectItem()
 
         name = lines[0]
         description = ""
-        technologies = []
-        bullets = []
+        technologies: list[str] = []
+        bullets: list[str] = []
         url = ""
 
         url_match = self.URL_RE.search(entry)
         if url_match:
             url = url_match.group(0)
 
+        if "|" in name:
+            name, _, tech = name.partition("|")
+            name = name.strip()
+            technologies = [t.strip() for t in re.split(r"[,/]|&", tech) if t.strip()]
+
         tech_pattern = r"(?:tech|technologies|stack|tools|languages|frameworks)\s*[:\-]\s*([^\n]+)"
         tech_match = re.search(tech_pattern, entry, re.I)
-        if tech_match:
+        if tech_match and not technologies:
             tech_text = tech_match.group(1)
             technologies = [t.strip() for t in re.split(r"[,/|;]", tech_text) if t.strip()]
 
         for line in lines[1:]:
-            if re.match(r"^[\-\*•]\s+", line):
-                bullets.append(re.sub(r"^[\-\*•]\s+", "", line))
+            if self._BULLET_RE.match(line):
+                bullets.append(self._BULLET_RE.sub("", line).strip())
             elif line and not description:
                 description = line
 
         return ProjectItem(
-            name=name,
+            name=name[:120],
             description=description[:300],
             technologies=technologies[:15],
             bullets=bullets[:10],
@@ -404,6 +471,8 @@ class ResumeParser:
 
     def _parse_education_entry(self, entry: str) -> EducationItem:
         lines = [l.strip() for l in entry.splitlines() if l.strip()]
+        while lines and self._is_section_header_line(lines[0]):
+            lines = lines[1:]
         if not lines:
             return EducationItem()
 
@@ -414,29 +483,40 @@ class ResumeParser:
         end_date = ""
         cgpa = ""
 
-        first_line = lines[0]
-        parts = re.split(r"\s*[-|•]\s*|\s{2,}|\t", first_line)
-        parts = [p.strip() for p in parts if p.strip()]
-
-        if len(parts) >= 2:
-            degree = parts[0]
-            institution = parts[1]
-        elif len(parts) == 1:
-            institution = parts[0]
+        institution = lines[0]
 
         date_pattern = "|".join(self.DATE_PATTERNS)
         date_re = re.compile(date_pattern, re.I)
+
+        for line in lines[1:]:
+            if self._BULLET_RE.match(line):
+                continue
+            if not degree and re.search(r"(?i)b\.?tech|m\.?tech|b\.?e\.?|m\.?e\.?|bachelor|master|mba|bca|mca|b\.?sc|m\.?sc|ph\.?d|diploma|degree", line):
+                degree = line.split(";")[0].split("CGPA")[0].split(" GPA")[0].strip()
+                paren = re.search(r"\(([^)]+)\)", degree)
+                if paren and not field:
+                    field = paren.group(1).strip()
+                if not field:
+                    m = re.search(r"(?i)\bin\s+([A-Z][A-Za-z &]+?)(?:\s*[;(]|$)", degree)
+                    if m:
+                        field = m.group(1).strip()
+
         dates = date_re.findall(entry)
-        if dates:
-            start_date = dates[0] if len(dates) > 0 else ""
-            end_date = dates[1] if len(dates) > 1 else ""
+        year_dates = [d for d in dates if re.search(r"(?:19|20)\d{2}", d)]
+        if year_dates:
+            start_date = year_dates[0]
+            if len(year_dates) > 1:
+                end_date = year_dates[1]
 
         cgpa_match = re.search(r"(?:cgpa|gpa|grade|percentage)\s*[:\-]\s*([\d.]+)", entry, re.I)
         if cgpa_match:
             cgpa = cgpa_match.group(1)
 
-        if len(parts) >= 3:
-            field = parts[2]
+        if not degree:
+            for line in lines[1:]:
+                if not self._BULLET_RE.match(line) and not date_re.fullmatch(line.strip()):
+                    degree = line.split(";")[0].strip()
+                    break
 
         return EducationItem(
             institution=institution,
@@ -450,49 +530,108 @@ class ResumeParser:
     def _extract_certifications(self, section_text: str) -> list[str]:
         if not section_text:
             return []
-        certs = []
-        lines = [l.strip() for l in section_text.splitlines() if l.strip()]
-        for line in lines:
-            if re.match(r"^[\-\*•]\s+", line):
-                cert = re.sub(r"^[\-\*•]\s+", "", line)
+        certs: list[str] = []
+        for raw in section_text.splitlines():
+            line = raw.strip()
+            if not line or self._is_section_header_line(line):
+                continue
+            line = self._BULLET_RE.sub("", line).strip() if self._BULLET_RE.match(line) else line
+            if not line or len(line) <= 2:
+                continue
+            if certs and self._is_continuation(line, certs[-1]):
+                certs[-1] = (certs[-1] + " " + line).strip()
             else:
-                cert = line
-            if cert and len(cert) > 2:
-                certs.append(cert[:200])
-        return certs[:10]
+                certs.append(line[:300])
+        return [c[:200] for c in certs[:10]]
 
     def _extract_achievements(self, section_text: str) -> list[str]:
         if not section_text:
             return []
-        achievements = []
-        lines = [l.strip() for l in section_text.splitlines() if l.strip()]
-        for line in lines:
-            if re.match(r"^[\-\*•]\s+", line):
-                ach = re.sub(r"^[\-\*•]\s+", "", line)
+        achievements: list[str] = []
+        for raw in section_text.splitlines():
+            line = raw.strip()
+            if not line or self._is_section_header_line(line):
+                continue
+            line = self._BULLET_RE.sub("", line).strip() if self._BULLET_RE.match(line) else line
+            if not line or len(line) <= 5:
+                continue
+            if achievements and self._is_continuation(line, achievements[-1]):
+                achievements[-1] = (achievements[-1] + " " + line).strip()
             else:
-                ach = line
-            if ach and len(ach) > 5:
-                achievements.append(ach[:300])
+                achievements.append(line[:300])
         return achievements[:10]
 
+    @staticmethod
+    def _is_continuation(line: str, prev: str) -> bool:
+        # A new item with its own year marker is never a wrap.
+        if line[:1].isupper() and re.search(r"\((?:19|20)\d{2}\)", line):
+            return False
+        starts_lower = bool(line[:1].isalpha()) and line[0].islower()
+        prev_finished = bool(re.search(r"[.!?][\"')\]]*$", prev.strip()))
+        return starts_lower or not prev_finished
+
+    _BULLET_RE = re.compile(r"^[\-\*•‣▪●○◆·]\s+")
+    _NUMBERED_RE = re.compile(r"^\d{1,2}[.)]\s+")
+
     def _split_entries(self, text: str) -> list[str]:
+        """Group section content into entries.
+
+        Bullets always belong to the CURRENT entry (they never start a new one);
+        section-header lines and blank lines flush the current entry.
+        """
         if not text:
             return []
-        lines = text.splitlines()
-        entries = []
-        current = []
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
+        entries: list[str] = []
+        current: list[str] = []
+
+        def flush() -> None:
+            nonlocal current
+            if current:
+                body = "\n".join(current).strip()
+                if len(body) > 20 and any(len(l.strip()) > 15 for l in current):
+                    entries.append(body)
+                current = []
+
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                flush()
                 continue
-            if re.match(r"^[\-\*•\d]\.?\s+", stripped) and current:
-                entries.append("\n".join(current))
-                current = [stripped]
-            elif re.match(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+[-|•]\s+[A-Z]", stripped) and current:
-                entries.append("\n".join(current))
-                current = [stripped]
+            if self._is_section_header_line(line):
+                flush()
+                continue
+            if self._BULLET_RE.match(line):
+                current.append(line)
+                continue
+            if not current:
+                current = [line]
+                continue
+            if self._NUMBERED_RE.match(line) or self._looks_like_new_entry(line, current):
+                flush()
+                current = [line]
+                continue
+            if any(self._BULLET_RE.match(l) for l in current):
+                # After a bullet: a lowercase line, or a line continuing a
+                # sentence (previous line lacks terminal punctuation), is a
+                # wrapped continuation — not a new entry.
+                starts_lower = bool(line[:1].isalpha()) and line[0].islower()
+                prev_finished = bool(re.search(r"[.!?][\"')\]]*$", current[-1].strip()))
+                if starts_lower or not prev_finished:
+                    if self._BULLET_RE.match(current[-1]):
+                        current[-1] = current[-1] + " " + line
+                    else:
+                        current.append(line)
+                else:
+                    flush()
+                    current = [line]
             else:
-                current.append(stripped)
-        if current:
-            entries.append("\n".join(current))
-        return [e for e in entries if len(e.strip()) > 20]
+                current.append(line)
+        flush()
+        return entries
+
+    def _looks_like_new_entry(self, line: str, current: list[str]) -> bool:
+        """A non-bullet line carrying its own year range starts a new record
+        when the current entry already has dated lines."""
+        if re.search(r"(?:19|20)\d{2}\s*(?:[-–—]|to)\s*(?:present|(?:19|20)\d{2})", line, re.I):
+            return any(re.search(r"(?:19|20)\d{2}", l) for l in current)
+        return False

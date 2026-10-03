@@ -26,17 +26,18 @@ BULK_SOURCES = frozenset({"remotive", "remoteok", "arbeitnow"})
 
 
 def _query_select(jobs: list[dict], queries: list[str]) -> list[dict]:
-    """Keep jobs matching any resume query (title/description/company/skills).
+    """Rank jobs by resume-query hits (matches first), keeping every job.
 
-    Every platform's feed is fetched, and only jobs relevant to this specific resume
-    are kept. If nothing matches at all, return the raw batch so a niche profile still
-    gets *some* live results to evaluate.
+    Ranking, not dropping: guest search results have no descriptions yet, so a
+    title-only hard filter threw away jobs the MatchingEngine would pass once
+    descriptions are enriched. Original order is preserved within hit counts.
     """
     if not jobs:
         return []
     if not queries:
         return jobs
-    matched = []
+    low_queries = [q.lower() for q in queries]
+    scored: list[tuple[int, dict]] = []
     for job in jobs:
         haystack = " ".join(
             [
@@ -46,9 +47,10 @@ def _query_select(jobs: list[dict], queries: list[str]) -> list[dict]:
                 " ".join(str(s) for s in (job.get("skills") or [])),
             ]
         ).lower()
-        if any(q.lower() in haystack for q in queries):
-            matched.append(job)
-    return matched if matched else jobs
+        hits = sum(1 for q in low_queries if q in haystack)
+        scored.append((hits, job))
+    scored.sort(key=lambda pair: -pair[0])
+    return [job for _, job in scored]
 
 
 def _experience_select(matched: list[dict], profile: dict | None) -> list[dict]:
@@ -86,7 +88,7 @@ def _experience_select(matched: list[dict], profile: dict | None) -> list[dict]:
 def _select_jobs_for_profile(
     jobs: list[dict], queries: list[str], limit: int, profile: dict | None = None
 ) -> list[dict]:
-    """Keep only jobs that match the resume's profile queries + experience level."""
+    """Rank by resume-query hits, drop clearly over-leveled jobs, cap at limit."""
     matched = _query_select(jobs, queries)
     matched = _experience_select(matched, profile)
     return matched[:limit]
@@ -151,6 +153,53 @@ def _filter_by_work_type(jobs: list[dict], remote_type: str, min_keep: int = 1) 
     return kept
 
 
+def _pick_queries(queries: list[str], n: int = 3) -> list[str]:
+    """Top queries for server-side search — diverse, no substring duplicates."""
+    picked: list[str] = []
+    for q in queries:
+        low = q.lower()
+        if any(low == p.lower() or low in p.lower() or p.lower() in low for p in picked):
+            continue
+        picked.append(q)
+        if len(picked) >= n:
+            break
+    return picked or queries[:1]
+
+
+async def _search_board_fetch(
+    scraper,
+    queries: list[str],
+    location: str,
+    fetch_limit: int,
+) -> tuple[list[dict], int | None]:
+    """Search a board with several queries, merging and deduping by URL."""
+    picked = _pick_queries(queries, 3)
+    per_query = max(15, fetch_limit // len(picked)) if len(picked) > 1 else fetch_limit
+    merged: list[dict] = []
+    seen: set[str] = set()
+    best_total: int | None = None
+    for qi, q in enumerate(picked):
+        if qi:
+            await asyncio.sleep(2.5)  # guest search throttles bursts
+        if hasattr(scraper, "fetch_jobs_with_count"):
+            part, total = await scraper.fetch_jobs_with_count(
+                query=q, location=location, limit=per_query
+            )
+        else:
+            part = await scraper.fetch_jobs(query=q, location=location, limit=per_query)
+            total = None
+        for job in part:
+            url = str(job.get("apply_url") or job.get("url") or "")
+            if url:
+                if url in seen:
+                    continue
+                seen.add(url)
+            merged.append(job)
+        if total is not None and (best_total is None or total > best_total):
+            best_total = total
+    return merged, best_total
+
+
 async def _fetch_from_scraper(
     scraper,
     queries: list[str],
@@ -162,9 +211,9 @@ async def _fetch_from_scraper(
     """Live search per platform for the candidate's role.
 
     Every selected platform is searched live (no stored pool). Search boards
-    use the resume's primary role query server-side so the per-platform total
-    is the exact available number for THAT role. Bulk / board sources fetch
-    the full feed and are filtered locally against every resume query.
+    run several short queries and merge; when a city-locked search comes back
+    thin (<8 jobs) it is retried country-wide. Bulk / board sources fetch the
+    full feed and are filtered locally against every resume query.
     Returns (jobs_kept_for_profile, site_total_available, raw_fetched_count).
     """
     source = scraper.source_name
@@ -182,21 +231,20 @@ async def _fetch_from_scraper(
         # For bulk feeds the "available for role" is the matched subset.
         total = len(kept) if _total is None else _total
         return kept, total, len(raw or [])
-    primary_query = queries[0] if queries else "software engineer"
     fetch_limit = JOBS_PER_SOURCE if location_hint else JOBS_PER_SOURCE_ALL
-    if hasattr(scraper, "fetch_jobs_with_count"):
-        raw, total = await scraper.fetch_jobs_with_count(
-            query=primary_query,
-            location=location_hint,
-            limit=fetch_limit,
-        )
-    else:
-        raw = await scraper.fetch_jobs(
-            query=primary_query,
-            location=location_hint,
-            limit=fetch_limit,
-        )
-        total = None
+    raw, total = await _search_board_fetch(scraper, queries, location_hint, fetch_limit)
+    # City search too thin → retry the country part (e.g. "Jaipur, India" → "India").
+    if len(raw) < 8 and "," in (location_hint or ""):
+        parts = [p.strip() for p in location_hint.split(",") if p.strip()]
+        if len(parts) >= 2 and len(parts[-1]) >= 2:
+            wide = parts[-1]
+            wide_raw, wide_total = await _search_board_fetch(scraper, queries, wide, fetch_limit)
+            if len(wide_raw) > len(raw):
+                logger.info(
+                    "Location %r returned %d jobs — widened to %r → %d",
+                    location_hint, len(raw), wide, len(wide_raw),
+                )
+                raw, total = wide_raw, wide_total
     if remote_type:
         # Guest search returns no work-type filter (f_WT ignored) and no
         # descriptions — classify from location + enriched description over
@@ -205,7 +253,7 @@ async def _fetch_from_scraper(
         if source == "linkedin":
             from app.agents.scraper.sources import enrich_linkedin_descriptions
 
-            await enrich_linkedin_descriptions(matched, max_fetch=60)
+            await enrich_linkedin_descriptions(matched, max_fetch=30)
         matched = _filter_by_work_type(matched, remote_type)
         kept = _experience_select(matched, profile)[:JOBS_AFTER_FILTER]
         if total is None:
@@ -245,7 +293,7 @@ async def _scrape_one(
         if source == "linkedin" and batch:
             from app.agents.scraper.sources import enrich_linkedin_descriptions
 
-            enriched = await enrich_linkedin_descriptions(batch)
+            enriched = await enrich_linkedin_descriptions(batch, max_fetch=min(40, len(batch)))
             logger.info("LinkedIn enriched %d/%d job descriptions", enriched, len(batch))
         scraper_error = getattr(scraper, "last_error", None)
         if not batch and scraper_error:

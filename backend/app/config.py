@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     templates_path: Path = Path(__file__).resolve().parent.parent / "templates"
     vector_index_path: Path = BASE_DIR / "storage" / "faiss_index"
 
-    match_threshold: float = 75.0
+    match_threshold: float = 65.0
     top_jobs_limit: int = 200
 
     # Plain string env var — never use list[str] here (Render/pydantic JSON parsing breaks).

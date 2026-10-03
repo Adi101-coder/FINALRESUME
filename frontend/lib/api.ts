@@ -3,50 +3,65 @@ export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:800
   "",
 );
 
-async function apiFetch(path: string, init?: RequestInit, timeoutMs = 120_000): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+const RETRYABLE_STATUS = new Set([502, 503, 504]);
+const RETRY_PAUSES_MS = [6_000, 12_000, 24_000];
 
-  try {
-    const res = await fetch(`${API_URL}${path}`, {
-      ...init,
-      signal: controller.signal,
-    });
-    if (res.status === 502 || res.status === 503) {
-      throw new Error(
-        `Backend is starting up (${res.status}). Please wait 30-60 seconds and try again. You can check ${API_URL}/health to confirm it's ready.`,
+class ApiError extends Error {}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function apiFetch(path: string, init?: RequestInit, timeoutMs = 120_000): Promise<Response> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= RETRY_PAUSES_MS.length; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(RETRY_PAUSES_MS[attempt - 1]);
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(`${API_URL}${path}`, {
+        ...init,
+        signal: controller.signal,
+      });
+      if (RETRYABLE_STATUS.has(res.status)) {
+        // Backend unreachable / Render cold start — request was not processed.
+        lastError = new Error(
+          `Backend unavailable (${res.status}) — waiting for it to come up (attempt ${attempt + 1}/${RETRY_PAUSES_MS.length + 1})…`,
+        );
+        continue;
+      }
+      if (res.status === 404) {
+        const detail = await res.text().catch(() => "");
+        throw new ApiError(detail || "Resource not found. Please check your input and try again.");
+      }
+      if (res.status >= 500) {
+        const detail = await res.text().catch(() => "");
+        throw new ApiError(detail || `Server error (${res.status}). Please try again later.`);
+      }
+      return res;
+    } catch (err) {
+      if (err instanceof ApiError) {
+        throw err;
+      }
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(
+          `Request timed out after ${timeoutMs / 1000}s. The backend may be waking up (free tier) — please wait a minute and retry.`,
+        );
+      }
+      // Network-level failure (backend down or cold starting) — safe to retry.
+      lastError = new Error(
+        `Cannot connect to backend at ${API_URL} (retried ${attempt + 1}/${RETRY_PAUSES_MS.length + 1}×). The server may be waking up — if this keeps happening, check ${API_URL}/health.`,
       );
+    } finally {
+      clearTimeout(timer);
     }
-    if (res.status === 404) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(detail || "Resource not found. Please check your input and try again.");
-    }
-    if (res.status >= 500) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(detail || `Server error (${res.status}). Please try again later.`);
-    }
-    return res;
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(
-        `Request timed out after ${timeoutMs / 1000}s. The backend may be waking up (free tier) — please wait a minute and retry.`,
-      );
-    }
-    if (err instanceof Error && err.message.includes("Backend is starting")) {
-      throw err;
-    }
-    if (err instanceof Error && err.message.includes("Resource not found")) {
-      throw err;
-    }
-    if (err instanceof Error && err.message.includes("Server error")) {
-      throw err;
-    }
-    throw new Error(
-      `Cannot connect to backend at ${API_URL}. Make sure the backend is running (check ${API_URL}/health). If you see a CORS error, the backend may be down (502).`,
-    );
-  } finally {
-    clearTimeout(timer);
   }
+
+  throw lastError ?? new Error(`Request failed: ${path}`);
 }
 
 async function apiFetchWithRetry(
@@ -155,7 +170,7 @@ export function logClick(
 }
 
 export async function checkBackendHealth(): Promise<boolean> {
-  const res = await apiFetchWithRetry("/health", undefined, 45_000, 2);
+  const res = await apiFetchWithRetry("/health", undefined, 20_000, 0);
   return res.ok;
 }
 
@@ -184,7 +199,7 @@ export async function uploadResume(file: File) {
 }
 
 export async function getJobSources() {
-  const res = await apiFetchWithRetry("/api/jobs/sources", undefined, 45_000, 2);
+  const res = await apiFetchWithRetry("/api/jobs/sources", undefined, 20_000, 0);
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<{ sources: JobSource[] }>;
 }
