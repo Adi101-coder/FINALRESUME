@@ -80,11 +80,24 @@ def _disk_info() -> dict:
     if raw_db and not raw_db.startswith("sqlite"):
         raw_db = "set(redacted)"
     raw_storage = os.environ.get("STORAGE_PATH")
+    ef = settings.model_config.get("env_file")
+    ef_path = Path(str(ef)) if ef else None
+    ef_lines: list[str] = []
+    if ef_path and ef_path.exists():
+        for ln in ef_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if ln.startswith("STORAGE_PATH"):
+                ef_lines.append(ln)
+            elif ln.startswith("DATABASE_URL"):
+                ef_lines.append(ln if "sqlite" in ln else "DATABASE_URL=set(redacted)")
     return {
         "var_data_mounted": mounted,
         "storage": str(settings.storage_path),
         "db": db,
         "env": {"STORAGE_PATH": raw_storage, "DATABASE_URL": raw_db},
+        "env_file": str(ef_path) if ef_path else None,
+        "env_file_exists": bool(ef_path and ef_path.exists()),
+        "env_file_lines": ef_lines,
+        "cwd": os.getcwd(),
     }
 
 
@@ -94,7 +107,7 @@ def health() -> dict:
         "status": "ok",
         "app": settings.app_name,
         "api_version": 2,
-        "build": "2026-10-03.9",
+        "build": "2026-10-03.10",
         "embedding_fallback": settings.use_embedding_fallback,
         "cors_origins": settings.cors_origin_list,
         "disk": _disk_info(),
