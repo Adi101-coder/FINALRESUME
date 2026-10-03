@@ -1,19 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import {
-  discoverJobs,
-  matchJobs,
-  startBotLogin,
-  getAutoApplyConfig,
-  getBotStatus,
-  signalHumanReady,
-  type MatchResult,
-} from "@/lib/api";
-
-const PLATFORMS = [
-  { key: "linkedin", label: "LinkedIn", needsLoginForSearch: true },
-];
+import { useState } from "react";
+import { discoverJobs, matchJobs, type MatchResult } from "@/lib/api";
 
 const JOB_TYPES = [
   { key: "", label: "Any" },
@@ -32,7 +20,6 @@ type Props = {
   onError: (err: string) => void;
   onMessage: (msg: string) => void;
   selectedPlatforms: string[];
-  onSelectedChange: (p: string[]) => void;
   remoteType: string;
   onRemoteTypeChange: (t: string) => void;
   searchLocation: string;
@@ -54,7 +41,6 @@ export function MatchStep({
   onError,
   onMessage,
   selectedPlatforms,
-  onSelectedChange,
   remoteType,
   onRemoteTypeChange,
   searchLocation,
@@ -68,102 +54,18 @@ export function MatchStep({
   const [matches, setMatches] = useState<MatchResult[]>([]);
   const [discovering, setDiscovering] = useState(false);
   const [threshold, setThreshold] = useState(40);
-  const [sessions, setSessions] = useState<any[] | null>(null);
-  const [loginPlatform, setLoginPlatform] = useState<string | null>(null);
   const [info, setInfo] = useState("");
 
-  const loadSessions = async () => {
-    try {
-      const cfg = await getAutoApplyConfig(candidateId);
-      setSessions(cfg.sessions || null);
-    } catch {}
-  };
-
-  useEffect(() => {
-    loadSessions();
-  }, [candidateId]);
-
-  const toggle = (p: string) => {
-    const next = selectedPlatforms.includes(p)
-      ? selectedPlatforms.filter((x) => x !== p)
-      : [...selectedPlatforms, p];
-    onSelectedChange(next);
-  };
-
-  const [loginBusy, setLoginBusy] = useState(false);
-  const [isLocal, setIsLocal] = useState(false);
-
-  useEffect(() => {
-    fetch("http://localhost:8000/health", { mode: "no-cors" })
-      .then(() => setIsLocal(true))
-      .catch(() => setIsLocal(false));
-  }, []);
-
-  const handleLogin = async (platform: string) => {
-    setLoginPlatform(platform);
-    setLoginBusy(true);
-    setInfo("");
-    onError("");
-    try {
-      await startBotLogin(candidateId, platform);
-      for (let i = 0; i < 10; i += 1) {
-        await new Promise((r) => setTimeout(r, 1500));
-        try {
-          const s = await getBotStatus(candidateId);
-          if (s.state === "error") {
-            onError(s.error || `${platform} login failed on server. Check the backend logs and retry.`);
-            setLoginPlatform(null);
-            setLoginBusy(false);
-            return;
-          }
-          if ((s.recent_events || []).length > 0) break;
-        } catch {
-          break;
-        }
-      }
-      if (!isLocal) {
-        setInfo(
-          `${platform} login started on the server. On the hosted version, browser login doesn't work (no display) — run the backend locally to complete the LinkedIn login.`,
-        );
-      } else {
-        setInfo(`Browser opened for ${platform}. Finish sign-in there, then press "Login done". You stay on this page.`);
-      }
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Login failed");
-      setLoginPlatform(null);
-    } finally {
-      setLoginBusy(false);
-    }
-  };
-
-  const handleLoginDone = async () => {
-    try {
-      await signalHumanReady();
-      setInfo("Session saving…");
-      await new Promise((r) => setTimeout(r, 2000));
-      await loadSessions();
-      setInfo("Session saved ✓");
-      onMessage("Logged in ✓");
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Signal failed");
-    } finally {
-      setLoginPlatform(null);
-    }
-  };
-
   const handleDiscover = async () => {
-    if (selectedPlatforms.length === 0) {
-      onError("Select at least one platform first.");
-      return;
-    }
+    const platforms = selectedPlatforms.length > 0 ? selectedPlatforms : ["linkedin"];
     setDiscovering(true);
     onError("");
     setInfo("");
     try {
       const roleLabel = profile?.preferred_roles?.[0] || profile?.experience?.[0]?.role || profile?.skills?.slice(0, 2)?.join(", ") || "your profile";
       const locLabel = allLocations ? "all locations" : searchLocation.trim() || profile?.location || "your location";
-      setInfo(`Searching ${selectedPlatforms.join(", ")} for "${roleLabel}" in ${locLabel}…`);
-      const disc = await discoverJobs(candidateId, selectedPlatforms, remoteType || undefined, true, {
+      setInfo(`Searching ${platforms.join(", ")} for "${roleLabel}" in ${locLabel}…`);
+      const disc = await discoverJobs(candidateId, platforms, remoteType || undefined, true, {
         location: searchLocation,
         allLocations,
       });
@@ -186,7 +88,7 @@ export function MatchStep({
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-3xl font-bold text-ink">View Matches</h1>
-          <p className="text-ink-500">Log in to LinkedIn once, then discover live jobs.</p>
+          <p className="text-ink-500">Discover live jobs matched to your resume.</p>
         </div>
         <button onClick={handleDiscover} disabled={discovering || loading} className="btn-dark">
           {discovering ? "Searching…" : "Discover Jobs"}
@@ -197,45 +99,7 @@ export function MatchStep({
       {info && <div className="alert-success mb-6">{info}</div>}
 
       <div className="mb-6 rounded-3xl border border-ink-200 bg-ink-50 p-4">
-        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-          <p className="text-sm font-medium text-ink">Platforms ({selectedPlatforms.length} selected)</p>
-          <div className="flex gap-2">
-            <button onClick={() => onSelectedChange(PLATFORMS.map((p) => p.key))} className="btn-outline text-xs">Select all</button>
-            <button onClick={() => onSelectedChange([])} className="btn-outline text-xs">Clear</button>
-            <button onClick={loadSessions} className="btn-outline text-xs">Refresh login</button>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {PLATFORMS.map((p) => {
-            const isLoggedIn = sessions?.find((s: any) => s.platform === p.key)?.logged_in;
-            const isSelected = selectedPlatforms.includes(p.key);
-            const needsLogin = p.needsLoginForSearch && !isLoggedIn;
-            return (
-              <div key={p.key} className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => toggle(p.key)}
-                  className={`rounded-xl border px-3 py-1.5 text-xs font-medium ${
-                    isSelected ? "border-ink bg-ink text-white" : "border-ink-200 bg-white text-ink-600"
-                  }`}
-                >
-                  {p.label} {isLoggedIn && "✓"} {needsLogin && "🔒"}
-                </button>
-                {needsLogin && (
-                  <button
-                    type="button"
-                    onClick={() => handleLogin(p.key)}
-                    disabled={loginBusy}
-                    className="rounded-xl border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800 disabled:opacity-50"
-                  >
-                    {loginPlatform === p.key && loginBusy ? "Opening…" : "Log in"}
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div className="mt-4">
+        <div>
           <p className="mb-2 text-sm font-medium text-ink">Job type</p>
           <div className="flex flex-wrap gap-2">
             {JOB_TYPES.map((t) => (
@@ -291,12 +155,6 @@ export function MatchStep({
                 : "Using the location from your resume."}
           </p>
         </div>
-        {loginPlatform && (
-          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-            <p className="font-medium">Logging in to {loginPlatform}… finish in the browser window. You stay here.</p>
-            <button onClick={handleLoginDone} className="btn-dark mt-2 text-sm">Login Done — Save Session</button>
-          </div>
-        )}
       </div>
 
       <div className="mb-6">

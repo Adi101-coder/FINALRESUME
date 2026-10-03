@@ -196,12 +196,6 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
           </p>
         </div>
       )}
-
-      {/* Kanban Status Board */}
-      <div className="mt-10">
-        <h2 className="text-2xl font-bold text-ink mb-4">Application Status Board</h2>
-        <KanbanBoard candidateId={candidateId} />
-      </div>
     </div>
   );
 }
@@ -234,48 +228,6 @@ function ReviewCard({ match, onApprove, onReject }: { match: MatchResult; onAppr
           Approve & Queue for Apply
         </button>
       </div>
-    </div>
-  );
-}
-
-function KanbanBoard({ candidateId }: { candidateId: number }) {
-  const columns = [
-    { id: "discovered", title: "Discovered", color: "bg-gray-100" },
-    { id: "applied", title: "Applied", color: "bg-blue-100" },
-    { id: "interviewing", title: "Interviewing", color: "bg-purple-100" },
-    { id: "offer", title: "Offer", color: "bg-green-100" },
-    { id: "rejected", title: "Rejected", color: "bg-red-100" },
-  ];
-
-  // Mock data - in real app, fetch from API
-  const mockData = {
-    discovered: [{ id: 1, title: "Software Engineer", company: "Stripe" }, { id: 2, title: "Frontend Dev", company: "Vercel" }],
-    applied: [{ id: 3, title: "Backend Engineer", company: "Railway" }],
-    interviewing: [{ id: 4, title: "Full Stack", company: "Linear" }],
-    offer: [],
-    rejected: [{ id: 5, title: "DevOps", company: "Fly.io" }],
-  };
-
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-      {columns.map((col) => (
-        <div key={col.id} className={`rounded-xl ${col.color} p-4 min-h-[300px]`}>
-          <h3 className="font-semibold text-ink mb-3 flex items-center justify-between">
-            {col.title}
-            <span className="px-2 py-0.5 rounded-full text-xs bg-white/50">
-              {mockData[col.id as keyof typeof mockData]?.length ?? 0}
-            </span>
-          </h3>
-          <div className="space-y-2">
-            {mockData[col.id as keyof typeof mockData]?.map((job: any) => (
-              <div key={job.id} className="bg-white rounded-lg p-3 shadow-sm border border-ink-100">
-                <p className="font-medium text-sm text-ink">{job.title}</p>
-                <p className="text-xs text-ink-500">{job.company}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }

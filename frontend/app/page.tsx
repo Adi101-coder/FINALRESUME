@@ -456,7 +456,6 @@ export default function HomePage() {
                 onError={setError}
                 onMessage={setMessage}
                 selectedPlatforms={selectedPlatforms}
-                onSelectedChange={setSelectedPlatforms}
                 remoteType={remoteType}
                 onRemoteTypeChange={setRemoteType}
                 searchLocation={searchLocation}
