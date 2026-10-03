@@ -85,6 +85,17 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# A literal default DATABASE_URL means "never configured" (set in the Render
+# dashboard as a placeholder). If the persistent disk at /var/data is mounted,
+# keep SQLite on the durable volume instead of the container's ephemeral FS.
+if settings.database_url == "sqlite:///./resumebuild.db":
+    try:
+        _mounts = Path("/proc/mounts").read_text()
+        if any(line.split()[1] == "/var/data" for line in _mounts.splitlines() if line.split()):
+            settings.database_url = "sqlite:////var/data/resumebuild.db"
+    except Exception:
+        pass
+
 settings.storage_path.mkdir(parents=True, exist_ok=True)
 settings.auto_apply_resumes_path.mkdir(parents=True, exist_ok=True)
 (settings.storage_path / "resumes").mkdir(parents=True, exist_ok=True)
