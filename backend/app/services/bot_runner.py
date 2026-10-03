@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
+from app.config import settings
 from app.database.session import SessionLocal
 from app.services.auto_apply_config import get_or_create_config, resolve_resume_path
 from app.services.bot_application_sync import record_bot_result
@@ -85,7 +86,7 @@ class BotRunnerService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._runs: dict[int, BotRun] = {}
-        self._session_dir = Path("storage/browser_sessions")
+        self._session_dir = settings.storage_path / "browser_sessions"
 
     def _playwright_available(self) -> bool:
         try:

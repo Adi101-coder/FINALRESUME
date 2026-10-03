@@ -11,6 +11,7 @@ from typing import Callable
 
 from playwright.sync_api import Browser, BrowserContext, sync_playwright
 
+from app.config import settings
 from app.agents.browser.board_common import (
     GLASSDOOR_CONFIG,
     INDEED_CONFIG,
@@ -23,7 +24,7 @@ from app.agents.browser.platform_handlers import ApplyOutcome, apply_for_platfor
 
 logger = logging.getLogger("app.browser.runner")
 
-DEFAULT_SESSION_DIR = Path("storage/browser_sessions")
+DEFAULT_SESSION_DIR = settings.storage_path / "browser_sessions"
 
 
 def default_headless() -> bool:

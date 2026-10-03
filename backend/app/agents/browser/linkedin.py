@@ -13,6 +13,7 @@ from typing import Callable
 from playwright.sync_api import Locator, Page
 
 from app.agents.browser.captcha import captcha_present, wait_for_human
+from app.config import settings
 from app.agents.browser.forms import (
     fill_custom_questions,
     fill_standard_fields,
@@ -484,7 +485,7 @@ def _save_dialog_visible(page: Page) -> bool:
 
 def _review_with_screenshot(page: Page) -> str:
     """Bail out of a stuck modal, keeping a debug screenshot for diagnosis."""
-    debug_dir = Path("storage/browser_sessions/debug")
+    debug_dir = settings.storage_path / "browser_sessions" / "debug"
     debug_dir.mkdir(parents=True, exist_ok=True)
     shot = debug_dir / f"modal_review_{int(time.time())}.png"
     try:
@@ -832,7 +833,7 @@ def apply_linkedin_from_search(
             msg = f"No Easy Apply clickable — {_debug_buttons(_job_details_panel(page))}"
             logger.info("No Easy Apply for: %s @ %s", title, company)
             if debug and job_id:
-                debug_dir = Path("storage/browser_sessions/debug")
+                debug_dir = settings.storage_path / "browser_sessions" / "debug"
                 debug_dir.mkdir(parents=True, exist_ok=True)
                 shot = debug_dir / f"linkedin_{job_id}.png"
                 try:
@@ -923,7 +924,7 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
 
     if not click_easy_apply(page, debug=debug):
         details = _job_details_panel(page)
-        debug_dir = Path("storage/browser_sessions/debug")
+        debug_dir = settings.storage_path / "browser_sessions" / "debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
         shot = debug_dir / f"no_easy_apply_{int(time.time())}.png"
         try:
