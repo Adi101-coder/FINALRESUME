@@ -36,6 +36,11 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearm
 # Set up working directory
 WORKDIR /app
 
+# Durable paths — must live under the Render persistent disk mounted at /var/data.
+# NOTE: a dashboard env var with the same key overrides these; keep them out of the dashboard.
+ENV STORAGE_PATH=/var/data/storage
+ENV DATABASE_URL=sqlite:////var/data/resumebuild.db
+
 # Copy requirements first for better caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

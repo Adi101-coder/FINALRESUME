@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     auto_apply_resumes_path: Path = BASE_DIR / "storage" / "auto_apply"
 
     storage_path: Path = BASE_DIR / "storage"
-    templates_path: Path = BASE_DIR / "templates"
+    # Resolve relative to this package (backend/), not the repo root — in the
+    # Docker image BASE_DIR points at "/", where templates wouldn't exist.
+    templates_path: Path = Path(__file__).resolve().parent.parent / "templates"
     vector_index_path: Path = BASE_DIR / "storage" / "faiss_index"
 
     match_threshold: float = 75.0
