@@ -437,3 +437,9 @@ export async function signalHumanReady() {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function signalGoBack() {
+  const res = await apiFetch("/api/bot/go-back", { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

@@ -16,6 +16,7 @@ from app.agents.browser.forms import (
     fill_standard_fields,
     upload_resume,
 )
+from app.agents.browser.lever import apply_lever_job_page
 from app.agents.browser.linkedin import apply_linkedin_job_page
 
 logger = logging.getLogger("app.browser.platforms")
@@ -180,8 +181,14 @@ def apply_foundit(page: Page, url: str, profile: dict, resume_path: str) -> Appl
     return ApplyOutcome(status, f"Foundit apply finished with status={status}.", "foundit", url)
 
 
+def apply_lever(page: Page, url: str, profile: dict, resume_path: str) -> ApplyOutcome:
+    return apply_lever_job_page(page, url, profile, resume_path)
+
+
 def detect_platform(url: str) -> str | None:
     url_lower = url.lower()
+    if "lever.co" in url_lower:
+        return "lever"
     if "greenhouse.io" in url_lower:
         return "greenhouse"
     if "linkedin.com" in url_lower:
@@ -203,6 +210,8 @@ def apply_for_platform(page: Page, url: str, profile: dict, resume_path: str) ->
     platform = detect_platform(url)
     if platform == "greenhouse":
         return apply_greenhouse(page, url, profile, resume_path)
+    if platform == "lever":
+        return apply_lever(page, url, profile, resume_path)
     if platform == "linkedin":
         return apply_linkedin(page, url, profile, resume_path)
     if platform == "indeed":

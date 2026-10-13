@@ -101,13 +101,13 @@ class BotRunnerService:
             import sys as _sys
 
             env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+            candidates: list[Path] = []
             if env_path:
-                # Playwright uses ONLY this path when set — don't fall back.
-                candidates = [Path(env_path)]
-            elif _sys.platform == "darwin":
-                candidates = [Path.home() / "Library" / "Caches" / "ms-playwright"]
+                candidates.append(Path(env_path))
+            if _sys.platform == "darwin":
+                candidates.append(Path.home() / "Library" / "Caches" / "ms-playwright")
             else:
-                candidates = [Path.home() / ".cache" / "ms-playwright"]
+                candidates.append(Path.home() / ".cache" / "ms-playwright")
             candidates.append(Path("/ms-playwright"))
             for root in candidates:
                 try:
@@ -325,8 +325,16 @@ class BotRunnerService:
                             self._log(run, "Login cancelled.")
                             break
                         if human_signaled():
-                            logged_in = True
-                            break
+                            if self._looks_logged_in(page, platform):
+                                logged_in = True
+                                self._log(run, f"{platform} login confirmed after signal.")
+                                break
+                            self._log(
+                                run,
+                                "Still waiting for login — finish signing in in the browser, then press Login done again.",
+                                level="warning",
+                            )
+                            continue
                         if self._looks_logged_in(page, platform):
                             logged_in = True
                             self._log(run, f"{platform} login detected.")
@@ -341,8 +349,18 @@ class BotRunnerService:
                         context.storage_state(path=path)
                         db = SessionLocal()
                         try:
-                            from app.services.session_store import save_session_from_file
+                            import json
 
+                            from app.services.session_store import (
+                                linkedin_session_logged_in,
+                                save_session_from_file,
+                            )
+
+                            state = json.loads(path.read_text(encoding="utf-8"))
+                            if platform == "linkedin" and not linkedin_session_logged_in(state):
+                                raise RuntimeError(
+                                    "LinkedIn login cookie (li_at) not captured — complete login in the browser and try again."
+                                )
                             save_session_from_file(db, run.candidate_id, platform, path)
                         finally:
                             db.close()
@@ -433,30 +451,14 @@ class BotRunnerService:
 
     def _check_session_valid(self, candidate_id: int, platform: str) -> bool:
         """Check if a valid session exists for the platform."""
-        session_file = self._session_dir / f"{platform}_session.json"
-        if session_file.exists():
-            try:
-                import json
-                with open(session_file) as f:
-                    state = json.load(f)
-                cookies = state.get("cookies", [])
-                # Check for essential cookies
-                essential_cookies = ["li_at", "JSESSIONID", "SESSION", "csrf_token"]
-                has_essential = any(c["name"] in essential_cookies for c in cookies)
-                if has_essential and cookies:
-                    return True
-            except Exception:
-                pass
         db = SessionLocal()
         try:
-            from app.services.session_store import get_session
-            state = get_session(db, candidate_id, platform)
-            if state:
-                cookies = state.get("cookies", [])
-                essential_cookies = ["li_at", "JSESSIONID", "SESSION", "csrf_token"]
-                has_essential = any(c["name"] in essential_cookies for c in cookies)
-                return has_essential and len(cookies) > 0
-            return False
+            from app.services.session_store import get_effective_session, linkedin_session_logged_in
+
+            state = get_effective_session(db, candidate_id, platform)
+            if platform == "linkedin":
+                return linkedin_session_logged_in(state)
+            return bool(state)
         except Exception:
             return False
         finally:
@@ -494,11 +496,11 @@ class BotRunnerService:
             if not candidate:
                 raise RuntimeError(f"Candidate {run.candidate_id} not found")
 
-            profile = candidate.profile_json or {}
+            profile = dict(candidate.profile_json or {})
             if profile.get("location"):
                 from app.agents.browser.forms import clean_location
 
-                profile = {**profile, "location": clean_location(profile)}
+                profile["location"] = clean_location(profile)
             resume_path = resolve_resume_path(db, run.candidate_id)
             config = get_or_create_config(db, run.candidate_id)
             job_titles = config.job_titles or ["Software Developer", "Frontend Developer"]
@@ -553,9 +555,34 @@ class BotRunnerService:
                                 f"Skipped {dropped} non-LinkedIn job(s) from the review queue.",
                             )
                         jobs = linkedin_jobs
-                    # Use specific jobs from review queue
-                    self._log(run, f"Applying to {len(jobs)} specific jobs from review queue")
-                    runner.apply_many(jobs, profile, resume_path, delay_sec=delay_sec)
+                    from app.services.applied_jobs import linkedin_job_id_from_url, should_skip_applied
+
+                    queue: list[dict] = []
+                    pre_db = SessionLocal()
+                    try:
+                        for j in jobs:
+                            url = str(j.get("apply_url") or j.get("url") or "")
+                            if should_skip_applied(
+                                pre_db,
+                                run.candidate_id,
+                                apply_url=url,
+                                linkedin_job_id=linkedin_job_id_from_url(url),
+                                db_job_id=j.get("job_id"),
+                            ):
+                                self._log(
+                                    run,
+                                    f"Skip (already applied): {j.get('title', 'Job')} @ {j.get('company', '?')}",
+                                )
+                                continue
+                            queue.append(j)
+                    finally:
+                        pre_db.close()
+                    jobs = queue
+                    if not jobs:
+                        self._log(run, "All queued jobs were already applied — nothing to do.")
+                    else:
+                        self._log(run, f"Applying to {len(jobs)} job(s) from review queue")
+                        runner.apply_many(jobs, profile, resume_path, delay_sec=delay_sec)
                 elif job_url:
                     self._log(run, f"Single apply: {job_url}")
                     job = {
@@ -609,12 +636,22 @@ class BotRunnerService:
         finally:
             db = SessionLocal()
             try:
-                from app.services.session_store import save_session_from_file
+                import json
+
+                from app.services.session_store import linkedin_session_logged_in, save_session_from_file
 
                 for p in PLATFORMS:
                     path = self._session_dir / f"{p}_session.json"
-                    if path.exists():
-                        save_session_from_file(db, run.candidate_id, p, path)
+                    if not path.exists():
+                        continue
+                    if p == "linkedin":
+                        try:
+                            state = json.loads(path.read_text(encoding="utf-8"))
+                        except Exception:
+                            continue
+                        if not linkedin_session_logged_in(state):
+                            continue
+                    save_session_from_file(db, run.candidate_id, p, path)
             except Exception:
                 pass
             finally:

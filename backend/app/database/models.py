@@ -91,6 +91,7 @@ class CandidateJob(Base):
 
 class Application(Base):
     __tablename__ = "applications"
+    __table_args__ = (UniqueConstraint("candidate_id", "job_id", name="uq_application_candidate_job"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)

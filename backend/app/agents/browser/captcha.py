@@ -28,6 +28,7 @@ CAPTCHA_TEXT_HINTS = (
 )
 
 _human_event = threading.Event()
+_go_back_event = threading.Event()
 
 
 def captcha_present(page: Page) -> bool:
@@ -51,6 +52,19 @@ def captcha_present(page: Page) -> bool:
 def signal_human_ready() -> None:
     """Signal that the human has completed the required action."""
     _human_event.set()
+
+
+def signal_go_back() -> None:
+    """User wants the bot to click Back in Easy Apply and pause for review."""
+    _go_back_event.set()
+
+
+def go_back_signaled() -> bool:
+    """Return True once if the user requested a step back."""
+    if _go_back_event.is_set():
+        _go_back_event.clear()
+        return True
+    return False
 
 
 def human_signaled() -> bool:
@@ -90,3 +104,29 @@ def wait_for_human(page: Page, reason: str, *, timeout_sec: int = 600) -> None:
         time.sleep(2)
 
     raise TimeoutError(f"Timed out waiting for human action: {reason}")
+
+
+def pause_for_manual_fill(page: Page, reason: str, *, timeout_sec: int = 60) -> None:
+    """Wait up to ``timeout_sec`` so the user can complete fields in the browser.
+
+    Unlike ``wait_for_human`` (CAPTCHA / ENTER), this is a fixed window for
+    employment dates, phone, and other fields automation often misses.
+    Ends early if the user signals ready via the app API.
+    """
+    logger.info("Manual fill pause (%ss): %s", timeout_sec, reason)
+    print("\n" + "=" * 60)
+    print("MANUAL FILL — up to %s seconds" % timeout_sec)
+    print(reason)
+    print("The bot will NOT click or type for %s seconds — fill fields yourself." % timeout_sec)
+    print("Or click “Login Done / CAPTCHA Solved” in the app when finished early.")
+    print("=" * 60)
+
+    _human_event.clear()
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        if _human_event.is_set():
+            _human_event.clear()
+            return
+        time.sleep(1)
+
+    # Full window elapsed — continue automation (user may have filled silently).

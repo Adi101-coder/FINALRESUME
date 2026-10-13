@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     openai_api_key: str = ""
+    # Set to https://openrouter.ai/api/v1 for OpenRouter (OpenAI-compatible).
+    openai_base_url: str = ""
     openai_model: str = "gpt-4o-mini"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     # Set true on Render free/starter to avoid OOM from downloading the ~90MB model.
@@ -41,6 +43,9 @@ class Settings(BaseSettings):
     openai_timeout_seconds: float = 25.0
 
     auto_apply_resumes_path: Path = BASE_DIR / "storage" / "auto_apply"
+    auto_apply_phone: str = "6387085385"
+    auto_apply_manual_fill_sec: int = 20
+    auto_apply_back_review_sec: int = 30
 
     storage_path: Path = BASE_DIR / "storage"
     # Resolve relative to this package (backend/), not the repo root — in the

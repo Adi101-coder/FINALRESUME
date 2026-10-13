@@ -91,3 +91,11 @@ def signal_human_ready():
     from app.agents.browser.captcha import signal_human_ready as _signal
     _signal()
     return {"status": "ok", "message": "Human action signal sent. Bot will resume."}
+
+
+@router.post("/go-back")
+def signal_go_back():
+    """Click Back in the apply modal (when possible) and pause for review."""
+    from app.agents.browser.captcha import signal_go_back as _signal
+    _signal()
+    return {"status": "ok", "message": "Go-back signal sent. Bot will step back and pause for review."}

@@ -127,10 +127,17 @@ class ResumeParser:
     def _parse_with_llm(self, raw_text: str) -> CandidateProfile:
         from openai import OpenAI
 
-        client = OpenAI(
-            api_key=settings.openai_api_key,
-            timeout=settings.openai_timeout_seconds,
-        )
+        client_kwargs: dict = {
+            "api_key": settings.openai_api_key,
+            "timeout": settings.openai_timeout_seconds,
+        }
+        if settings.openai_base_url.strip():
+            client_kwargs["base_url"] = settings.openai_base_url.strip()
+            client_kwargs["default_headers"] = {
+                "HTTP-Referer": "http://localhost:3000",
+                "X-Title": settings.app_name,
+            }
+        client = OpenAI(**client_kwargs)
         schema = CandidateProfile.model_json_schema()
         prompt = (
             "Extract resume information into JSON matching this schema exactly. "

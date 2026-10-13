@@ -13,7 +13,7 @@ const JOB_TYPES = [
 type Props = {
   candidateId: number;
   profile: any;
-  onComplete: () => void;
+  onComplete: (matches: MatchResult[]) => void;
   onBack: () => void;
   loading: boolean;
   error: string;
@@ -199,8 +199,11 @@ export function MatchStep({
           ← Back to Platforms
         </button>
         {filteredMatches.length > 0 && (
-          <button onClick={onComplete} className="btn-dark flex-[2]">
-            Review & Approve Applications →
+          <button
+            onClick={() => onComplete(filteredMatches)}
+            className="btn-dark flex-[2]"
+          >
+            Auto-apply to {filteredMatches.length} jobs →
           </button>
         )}
       </div>

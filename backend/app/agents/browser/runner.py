@@ -19,12 +19,17 @@ from app.agents.browser.board_common import (
     apply_from_search as board_apply_from_search,
 )
 from app.agents.browser.job_search import search_jobs_on_platform
-from app.agents.browser.linkedin import apply_linkedin_from_search
+from app.agents.browser.linkedin import apply_linkedin_from_search, apply_linkedin_job_page
 from app.agents.browser.platform_handlers import ApplyOutcome, apply_for_platform, detect_platform
 
 logger = logging.getLogger("app.browser.runner")
 
 DEFAULT_SESSION_DIR = settings.storage_path / "browser_sessions"
+
+# LinkedIn Easy Apply loads extra APIs that often reject default Playwright Chromium.
+_STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+"""
 
 
 def default_headless() -> bool:
@@ -264,16 +269,24 @@ class AutoApplyRunner:
                 self._browser.close()
             except Exception:
                 pass
-        args = ["--disable-dev-shm-usage", "--disable-gpu"]
+        args = [
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-blink-features=AutomationControlled",
+        ]
         if sys.platform.startswith("linux"):
             # Containers (Render/Docker) have no user-namespace sandbox and a
             # tiny /dev/shm — without these Chromium dies at launch/first tab.
             args.append("--no-sandbox")
-        self._browser = self._playwright.chromium.launch(
-            headless=self.headless,
-            slow_mo=self.slow_mo_ms,
-            args=args,
-        )
+        launch_kwargs: dict = {
+            "headless": self.headless,
+            "slow_mo": self.slow_mo_ms,
+            "args": args,
+            "ignore_default_args": ["--enable-automation"],
+        }
+        if system_chrome_user_data_dir() is not None:
+            launch_kwargs["channel"] = "chrome"
+        self._browser = self._playwright.chromium.launch(**launch_kwargs)
 
     def __exit__(self, *args) -> None:
         if self._browser:
@@ -301,13 +314,18 @@ class AutoApplyRunner:
 
     def load_applied_ids(self, platform: str) -> set[str]:
         path = self._applied_ids_file(platform)
-        if not path.exists():
-            return set()
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return set(str(x) for x in data)
-        except Exception:
-            return set()
+        file_ids: set[str] = set()
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                file_ids = set(str(x) for x in data)
+            except Exception:
+                file_ids = set()
+        if self.db and self.candidate_id:
+            from app.services.applied_jobs import merge_applied_sets
+
+            return merge_applied_sets(file_ids, self.db, self.candidate_id, platform)
+        return file_ids
 
     def save_applied_ids(self, platform: str, applied_ids: set[str]) -> None:
         path = self._applied_ids_file(platform)
@@ -315,13 +333,24 @@ class AutoApplyRunner:
 
     def _load_storage_state(self, platform: str) -> dict | str | None:
         if self.db and self.candidate_id:
-            from app.services.session_store import get_session
+            from app.services.session_store import get_effective_session, linkedin_session_logged_in
 
-            state = get_session(self.db, self.candidate_id, platform)
+            state = get_effective_session(self.db, self.candidate_id, platform)
             if state:
+                if platform == "linkedin" and not linkedin_session_logged_in(state):
+                    return None
                 return state
         path = self._session_file(platform)
         if path.exists():
+            from app.services.session_store import linkedin_session_logged_in
+
+            if platform == "linkedin":
+                try:
+                    file_state = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    return None
+                if not linkedin_session_logged_in(file_state):
+                    return None
             return str(path)
         return None
 
@@ -348,7 +377,27 @@ class AutoApplyRunner:
             state = self._load_storage_state(platform)
             if state is not None:
                 kwargs["storage_state"] = state
-        return self._browser.new_context(**kwargs)
+        context = self._browser.new_context(**kwargs)
+        if platform == "linkedin":
+            context.add_init_script(_STEALTH_INIT_SCRIPT)
+        return context
+
+    def _open_linkedin_context(self) -> BrowserContext:
+        """Use the same real Chrome profile as login when possible.
+
+        Cookie replay into stock Playwright Chromium often loads job search but
+        fails Easy Apply with 'error loading this application' on most jobs.
+        """
+        if self._playwright is None:
+            self._playwright = sync_playwright().start()
+        if not self.headless and system_chrome_user_data_dir():
+            try:
+                context = open_system_chrome_context(self._playwright)
+                logger.info("LinkedIn apply: using system Chrome profile")
+                return context
+            except RuntimeError as exc:
+                logger.warning("LinkedIn apply: system Chrome unavailable (%s) — using saved session", exc)
+        return self._new_context("linkedin")
 
     def login_once(self, platform: str, start_url: str) -> None:
         self._ensure_browser()
@@ -362,10 +411,16 @@ class AutoApplyRunner:
         context.close()
 
     def apply(self, url: str, profile: dict, resume_path: str) -> ApplyOutcome:
-        self._ensure_browser()
         platform = detect_platform(url) or "generic"
-        context = self._new_context(platform if platform != "generic" else None)
-        page = context.new_page()
+        if platform == "linkedin":
+            if self._playwright is None:
+                self._playwright = sync_playwright().start()
+            context = self._open_linkedin_context()
+            page = context.pages[0] if context.pages else context.new_page()
+        else:
+            self._ensure_browser()
+            context = self._new_context(platform if platform != "generic" else None)
+            page = context.new_page()
         try:
             outcome = apply_for_platform(page, url, profile, resume_path)
             if platform != "generic":
@@ -390,9 +445,8 @@ class AutoApplyRunner:
         max_jobs: int | None = None,
         apply_mode: str | None = "top",
     ) -> list[dict]:
-        self._ensure_browser()
-        context = self._new_context("linkedin")
-        page = context.new_page()
+        context = self._open_linkedin_context()
+        page = context.pages[0] if context.pages else context.new_page()
 
         applied_ids = self.load_applied_ids("linkedin")
         all_results: list[dict] = []
@@ -601,7 +655,94 @@ class AutoApplyRunner:
         delay_sec: float = 3.0,
     ) -> list[dict]:
         results: list[dict] = []
-        for i, job in enumerate(jobs, start=1):
+        linkedin_jobs: list[dict] = []
+        other_jobs: list[dict] = []
+
+        for job in jobs:
+            url = job.get("apply_url") or job.get("url", "")
+            if detect_platform(url) == "linkedin":
+                linkedin_jobs.append(job)
+            else:
+                other_jobs.append(job)
+
+        if linkedin_jobs:
+            if self._playwright is None:
+                self._playwright = sync_playwright().start()
+            context = self._open_linkedin_context()
+            page = context.pages[0] if context.pages else context.new_page()
+            try:
+                applied_keys = self.load_applied_ids("linkedin")
+                for job in linkedin_jobs:
+                    url = job.get("apply_url") or job.get("url", "")
+                    title = job.get("title", "?")
+                    company = job.get("company", "?")
+                    if not url:
+                        row = {"title": title, "company": company, "status": "skipped", "message": "No apply URL"}
+                        results.append(row)
+                        self._emit(row)
+                        continue
+                    from app.agents.browser.linkedin import _job_id_from_url
+                    from app.services.applied_jobs import job_skip_keys, linkedin_job_id_from_url
+
+                    lid = _job_id_from_url(url) or linkedin_job_id_from_url(url)
+                    keys = job_skip_keys(
+                        apply_url=url,
+                        linkedin_job_id=lid,
+                        db_job_id=job.get("job_id"),
+                    )
+                    if keys & applied_keys:
+                        row = {
+                            "title": title,
+                            "company": company,
+                            "url": url,
+                            "platform": "linkedin",
+                            "status": "skipped",
+                            "message": "Already applied (saved in your application history)",
+                            "job_id": lid or job.get("job_id"),
+                        }
+                        results.append(row)
+                        self._emit(row)
+                        logger.info("Skip duplicate apply: %s @ %s", title, company)
+                        continue
+                    try:
+                        outcome = apply_linkedin_job_page(page, url, profile, resume_path, debug=True)
+                        row = {
+                            "title": title,
+                            "company": company,
+                            "url": url,
+                            "platform": outcome.platform,
+                            "status": outcome.status,
+                            "message": outcome.message,
+                            "job_id": job.get("job_id"),
+                        }
+                        results.append(row)
+                        self._emit(row)
+                    except Exception as exc:
+                        row = {
+                            "title": title,
+                            "company": company,
+                            "url": url,
+                            "status": "failed",
+                            "message": str(exc),
+                            "job_id": job.get("job_id"),
+                        }
+                        results.append(row)
+                        self._emit(row)
+                    else:
+                        status = row.get("status")
+                        msg = (row.get("message") or "").lower()
+                        if lid and (status == "submitted" or "already applied" in msg):
+                            applied_keys.add(lid)
+                            applied_keys |= job_skip_keys(apply_url=url, linkedin_job_id=lid)
+                        if lid and not row.get("job_id"):
+                            row["job_id"] = lid
+                    time.sleep(delay_sec)
+                self.save_applied_ids("linkedin", applied_keys)
+                self.save_session(context, "linkedin")
+            finally:
+                context.close()
+
+        for i, job in enumerate(other_jobs, start=1):
             url = job.get("apply_url") or job.get("url", "")
             title = job.get("title", "?")
             company = job.get("company", "?")

@@ -11,7 +11,7 @@ from app.services.auto_apply_config import (
     get_or_create_config,
     save_auto_apply_resume,
 )
-from app.services.session_store import list_sessions, save_session
+from app.services.session_store import linkedin_session_logged_in, list_sessions, save_session
 
 logger = logging.getLogger("app.auto_apply")
 
@@ -95,6 +95,11 @@ def upload_session(candidate_id: int, platform: str, payload: SessionUpload, db:
         raise HTTPException(
             status_code=422,
             detail="storage_state must be a Playwright storage_state dict with a non-empty cookies list.",
+        )
+    if platform == "linkedin" and not linkedin_session_logged_in(state):
+        raise HTTPException(
+            status_code=422,
+            detail="LinkedIn session is not authenticated (missing li_at cookie). Log in fully before saving.",
         )
     save_session(db, candidate_id, platform, state)
     logger.info("Session uploaded: candidate_id=%s platform=%s (%d cookies)", candidate_id, platform, len(state["cookies"]))

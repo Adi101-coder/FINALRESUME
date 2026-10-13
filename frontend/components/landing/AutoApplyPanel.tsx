@@ -10,6 +10,7 @@ import {
   startBot,
   stopBot,
   signalHumanReady,
+  signalGoBack,
   type AutoApplyConfig,
   type BotStatus,
 } from "@/lib/api";
@@ -346,6 +347,12 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
           <>
             <button className="btn-dark" onClick={() => void handleStopBot()}>
               Stop bot
+            </button>
+            <button
+              className="btn-outline"
+              onClick={() => void signalGoBack().then(() => setMessage("Going back — 30s to review the form."))}
+            >
+              Go back (30s review)
             </button>
             <button
               className="btn-outline"

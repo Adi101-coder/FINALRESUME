@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   getAutoApplyConfig,
   getBotStatus,
   startBot,
   stopBot,
   signalHumanReady,
+  signalGoBack,
   type AutoApplyConfig,
   type BotStatus,
 } from "@/lib/api";
@@ -27,6 +28,8 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
   const [botStatus, setBotStatus] = useState<BotStatus | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [botRunning, setBotRunning] = useState(false);
+  const [startError, setStartError] = useState("");
+  const autoStarted = useRef(false);
 
   const loadConfig = async () => {
     try {
@@ -53,21 +56,52 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
     return () => clearInterval(timer);
   }, [botRunning, candidateId]);
 
-  const handleStartBot = async () => {
+  const handleStartBot = async (jobsOverride?: typeof reviewQueue) => {
+    const source = jobsOverride ?? reviewQueue;
     setBotRunning(true);
+    setStartError("");
     try {
-      // Convert review queue matches to job format for the bot
-      const jobs = reviewQueue.map((match) => ({
-        title: match.title,
-        company: match.company,
-        apply_url: match.apply_url,
-        job_id: match.job_id,
-      }));
-      await startBot(candidateId, { platform: "linkedin", continuous: false, batchSize: 1, jobs });
+      const jobs = source
+        .filter((match) => match.apply_url)
+        .map((match) => ({
+          title: match.title,
+          company: match.company,
+          apply_url: match.apply_url,
+          job_id: match.job_id,
+        }));
+      if (jobs.length > 0) {
+        await startBot(candidateId, {
+          platform: "linkedin",
+          continuous: false,
+          batchSize: Math.min(jobs.length, 20),
+          jobs,
+        });
+      } else {
+        await startBot(candidateId, {
+          platform: "linkedin",
+          continuous: true,
+          batchSize: 5,
+          applyMode: "all",
+        });
+      }
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not start the bot";
+      if (/already running/i.test(message)) {
+        setBotRunning(true);
+        return;
+      }
+      setStartError(message);
       setBotRunning(false);
     }
   };
+
+  useEffect(() => {
+    if (autoStarted.current) return;
+    autoStarted.current = true;
+    void handleStartBot(reviewQueue);
+    // Start once when this step opens, using the jobs queued from Matches.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleStopBot = async () => {
     await stopBot(candidateId);
@@ -96,15 +130,15 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
     <div className="max-w-4xl mx-auto">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-bold text-ink">Review & Approve</h1>
-          <p className="text-ink-500">Review personalized applications before the bot applies</p>
+          <h1 className="text-3xl font-bold text-ink">Auto-apply</h1>
+          <p className="text-ink-500">The bot starts on its own and submits LinkedIn applications for these jobs</p>
         </div>
         <button onClick={onBack} className="btn-outline text-sm">
           ← Back to Matches
         </button>
       </div>
 
-      {error && <div className="alert-error mb-6">{error}</div>}
+      {(error || startError) && <div className="alert-error mb-6">{startError || error}</div>}
 
       {/* Bot Status */}
       <div className={`mb-6 rounded-xl border p-4 ${botRunning ? "border-ink bg-ink text-white" : "border-ink-200 bg-ink-50"}`}>
@@ -114,11 +148,23 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
             <p className="text-sm opacity-75">
               {botStatus?.submitted ?? 0} applied · {botStatus?.skipped ?? 0} skipped · {botStatus?.failed ?? 0} failed
             </p>
+            {botStatus?.recent_events?.length ? (
+              <ul className="mt-2 max-h-28 overflow-y-auto text-xs opacity-90 space-y-1">
+                {botStatus.recent_events
+                  .filter((e) => e.result?.status && e.result.status !== "submitted")
+                  .slice(-4)
+                  .map((e, i) => (
+                    <li key={i}>
+                      {String(e.result?.title ?? "Job")}: {String(e.result?.message ?? e.message ?? "")}
+                    </li>
+                  ))}
+              </ul>
+            ) : null}
           </div>
           <div className="flex gap-2">
             {!botRunning ? (
-              <button onClick={handleStartBot} className="btn-dark" disabled={reviewQueue.length === 0}>
-                Start Bot ({reviewQueue.length} jobs)
+              <button onClick={() => handleStartBot()} className="btn-dark">
+                Start Bot{reviewQueue.length ? ` (${reviewQueue.length} jobs)` : ""}
               </button>
             ) : (
               <button onClick={handleStopBot} className="btn-outline bg-red-100 text-red-700 border-red-300">
@@ -126,10 +172,16 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
               </button>
             )}
             <button
+              onClick={() => void signalGoBack()}
+              className="btn-outline text-sm"
+            >
+              Go back (30s review)
+            </button>
+            <button
               onClick={() => signalHumanReady().then(() => setBotStatus((s: any) => ({ ...s, state: "running" })))}
               className="btn-outline text-sm"
             >
-              Login Done / CAPTCHA Solved
+              Done (login / CAPTCHA / manual fields)
             </button>
           </div>
         </div>

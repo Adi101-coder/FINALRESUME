@@ -449,7 +449,10 @@ export default function HomePage() {
               <MatchStep
                 candidateId={candidateId}
                 profile={profile}
-                onComplete={() => setStep("apply")}
+                onComplete={(matches) => {
+                  setReviewQueue(matches);
+                  setStep("apply");
+                }}
                 onBack={() => setStep("platforms")}
                 loading={loading}
                 error={error}

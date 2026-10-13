@@ -41,11 +41,40 @@ def get_or_create_config(db: Session, candidate_id: int) -> AutoApplyConfig:
     return row
 
 
+def _named_resume(*directories: Path) -> Path | None:
+    """Find Adit_Katiyar.pdf (any casing) in the given folders."""
+    wanted = "adit_katiyar.pdf"
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in directory.iterdir():
+            if path.is_file() and path.name.lower() == wanted:
+                return path.resolve()
+    return None
+
+
 def resolve_resume_path(db: Session, candidate_id: int) -> str:
-    """Prefer dedicated auto-apply PDF, else latest uploaded resume."""
+    """Use the resume parsed at the start, then fall back to named copies."""
+    original = (
+        db.query(Resume)
+        .filter(Resume.candidate_id == candidate_id, Resume.version_label == "original")
+        .order_by(Resume.created_at.asc())
+        .first()
+    )
+    if original and Path(original.file_path).exists():
+        return str(Path(original.file_path).resolve())
+
+    named = _named_resume(settings.storage_path / "resumes", settings.storage_path)
+    if named:
+        return str(named)
+
     dedicated = resume_path_for(candidate_id)
     if dedicated.exists():
         return str(dedicated.resolve())
+
+    downloads = _named_resume(Path.home() / "Downloads")
+    if downloads:
+        return str(downloads)
 
     config = db.get(AutoApplyConfig, candidate_id)
     if config and config.resume_path and Path(config.resume_path).exists():
@@ -59,15 +88,6 @@ def resolve_resume_path(db: Session, candidate_id: int) -> str:
     )
     if auto_resume and Path(auto_resume.file_path).exists():
         return auto_resume.file_path
-
-    original = (
-        db.query(Resume)
-        .filter(Resume.candidate_id == candidate_id)
-        .order_by(Resume.created_at.desc())
-        .first()
-    )
-    if original and Path(original.file_path).exists():
-        return original.file_path
 
     raise FileNotFoundError(
         f"No resume for candidate {candidate_id}. Upload via Auto-Apply section or main resume upload."
