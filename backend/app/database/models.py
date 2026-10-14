@@ -108,6 +108,27 @@ class Application(Base):
     candidate: Mapped["Candidate"] = relationship(back_populates="applications")
 
 
+class AppliedJob(Base):
+    """Local ledger of jobs this candidate already applied to (for skip + verify)."""
+
+    __tablename__ = "applied_jobs"
+    __table_args__ = (UniqueConstraint("candidate_id", "skip_key", name="uq_applied_job_skip"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    company: Mapped[str] = mapped_column(String(512), default="")
+    location: Mapped[str] = mapped_column(String(255), default="")
+    apply_url: Mapped[str] = mapped_column(String(1024), default="")
+    linkedin_job_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    platform: Mapped[str] = mapped_column(String(64), default="linkedin")
+    skip_key: Mapped[str] = mapped_column(String(256), default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    applied_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class PlatformSession(Base):
     """Playwright cookie/session state — not passwords."""
 

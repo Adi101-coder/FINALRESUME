@@ -15,8 +15,27 @@ logger = logging.getLogger("app.browser.forms")
 
 
 def phone_for_apply(profile: dict) -> str:
-    """Phone number only if it was parsed from the uploaded resume."""
-    return (profile.get("phone") or "").strip()
+    """Phone from the resume, else AUTO_APPLY_PHONE so Easy Apply can proceed."""
+    parsed = (profile.get("phone") or "").strip()
+    if parsed:
+        return parsed
+    return (settings.auto_apply_phone or "").strip()
+
+
+def phone_country_label(profile: dict) -> str:
+    """LinkedIn 'Phone country code' option (e.g. India / +91)."""
+    phone = re.sub(r"[^\d+]", "", phone_for_apply(profile))
+    loc = clean_location(profile).lower()
+    if phone.startswith("+91") or phone.startswith("91") and len(phone) >= 12:
+        return "India"
+    if "india" in loc or "jaipur" in loc or "bengaluru" in loc or "bangalore" in loc:
+        return "India"
+    digits = re.sub(r"\D", "", phone)
+    if re.fullmatch(r"[6-9]\d{9}", digits or ""):
+        return "India"
+    if phone.startswith("+1") or "united states" in loc or loc.endswith("usa"):
+        return "United States"
+    return "India"
 
 
 def modal_has_validation_errors(scope: Locator) -> bool:
@@ -454,8 +473,16 @@ def repair_invalid_fields(page: Page, profile: dict, modal: Locator | None = Non
         hint = (state["label"] or "").lower()
         try:
             if tag == "select" and state["valueMissing"]:
-                pick = _select_repair_value(hint, profile, years)
-                if pick and _select_native_option(el, pick):
+                pick = _select_repair_value(hint, profile, years) or resume_value_for_hint(
+                    state["label"] or hint, profile
+                )
+                if pick and (_select_native_option(el, pick) or _choose_dropdown(el, pick)):
+                    fixed += 1
+                else:
+                    remaining += 1
+                continue
+            if "country code" in hint and state["valueMissing"]:
+                if _fill_phone_country_code(page, profile):
                     fixed += 1
                 else:
                     remaining += 1
@@ -526,6 +553,8 @@ def _select_repair_value(hint: str, profile: dict, years: int) -> str:
     if not start_year:
         start_year = _fallback_year(profile)
 
+    if "country code" in h or "dial code" in h or "phone country" in h:
+        return phone_country_label(profile)
     if "from month" in h or (h.endswith("month") and "to " not in h):
         return start_month
     if "to month" in h or "end month" in h:
@@ -539,6 +568,33 @@ def _select_repair_value(hint: str, profile: dict, years: int) -> str:
     if "month" in h:
         return start_month
     return ""
+
+
+def _fill_phone_country_code(page: Page, profile: dict) -> int:
+    """Set LinkedIn's required Phone country code combobox (India / +91)."""
+    label = phone_country_label(profile)
+    if not label:
+        return 0
+    dialog = page.locator("div[role='dialog'], .jobs-easy-apply-modal")
+    root = dialog.last if dialog.count() > 0 else page
+    locators = [
+        root.get_by_label(re.compile(r"phone country code|country code", re.I)),
+        root.locator('[aria-label*="country code" i]'),
+        root.locator('select[id*="country" i], select[name*="country" i]'),
+    ]
+    for loc in locators:
+        try:
+            if loc.count() == 0:
+                continue
+            target = loc.first
+            if not target.is_visible():
+                continue
+            if _choose_dropdown(target, label) or _choose_dropdown(target, "+91"):
+                logger.info("Set phone country code to %s", label)
+                return 1
+        except Exception:
+            continue
+    return 0
 
 
 def fill_standard_fields(page: Page, profile: dict) -> int:
@@ -584,6 +640,8 @@ def fill_standard_fields(page: Page, profile: dict) -> int:
     if location_filled:
         page.wait_for_timeout(900)
         _select_typeahead(page)
+
+    filled += _fill_phone_country_code(page, profile)
 
     # Label-based fills (Playwright get_by_label)
     label_map = {
@@ -813,6 +871,7 @@ def _resume_answer(hint: str, profile: dict) -> str:
 
     rules: list[tuple[str, str]] = [
         (r"e-?mail", profile.get("email") or ""),
+        (r"country code|dial code|phone country", phone_country_label(profile)),
         (r"phone|mobile|contact number", phone_for_apply(profile)),
         (r"first name", _first_name(name)),
         (r"last name|surname", _last_name(name)),
@@ -1179,7 +1238,9 @@ def fill_required_comboboxes(page: Page, profile: dict, scope: Locator | None = 
                 if val and not re.search(r"select|choose|month|year", val, re.I):
                     continue
             hint = _control_hint(box)
-            pick = _select_repair_value(hint, profile, _profile_years(profile))
+            pick = _select_repair_value(hint, profile, _profile_years(profile)) or resume_value_for_hint(
+                hint, profile
+            )
             if not pick:
                 continue
             if tag == "select":

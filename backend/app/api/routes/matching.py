@@ -7,7 +7,7 @@ from app.agents.matcher.engine import MatchingEngine
 from app.agents.resume.optimizer import ResumeOptimizer
 from app.agents.resume.pdf_generator import ResumePDFGenerator
 from app.config import settings
-from app.database.models import Application, Candidate, CandidateJob, Job, JobMatch, Resume
+from app.database.models import Candidate, CandidateJob, Job, JobMatch, Resume
 from app.database.session import get_db
 from app.schemas.job import MatchResult
 from app.schemas.profile import CandidateProfile
@@ -51,19 +51,24 @@ def match_candidate_jobs(candidate_id: int, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Jobs the bot/user already applied to are hidden so other jobs surface.
-    applied_job_ids = {
-        row[0]
-        for row in db.query(Application.job_id)
-        .filter(Application.candidate_id == candidate.id)
-        .filter(Application.status.in_(("applied", "submitted")))
-        .all()
-    }
-    if applied_job_ids:
-        jobs = [j for j in jobs if j.id not in applied_job_ids]
+    from app.services.applied_jobs import linkedin_job_id_from_url, should_skip_applied
+
+    before = len(jobs)
+    jobs = [
+        j
+        for j in jobs
+        if not should_skip_applied(
+            db,
+            candidate.id,
+            apply_url=j.apply_url or "",
+            linkedin_job_id=linkedin_job_id_from_url(j.apply_url or ""),
+            db_job_id=j.id,
+        )
+    ]
+    if before != len(jobs):
         logger.info(
             "Excluding %d already-applied jobs — %d remain in pool",
-            len(applied_job_ids),
+            before - len(jobs),
             len(jobs),
         )
 

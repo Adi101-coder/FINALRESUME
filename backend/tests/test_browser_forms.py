@@ -76,9 +76,13 @@ class TestScreeningAnswers(unittest.TestCase):
 
 
 class TestPhoneDefault(unittest.TestCase):
-    def test_resume_phone_only(self) -> None:
-        self.assertEqual(phone_for_apply({}), "")
+    def test_resume_phone_preferred(self) -> None:
         self.assertEqual(phone_for_apply({"phone": "+1 555 0100"}), "+1 555 0100")
+
+    def test_country_from_india_location(self) -> None:
+        from app.agents.browser.forms import phone_country_label
+
+        self.assertEqual(phone_country_label({"location": "Jaipur, Rajasthan, India"}), "India")
 
 
 class TestAnswerAliases(unittest.TestCase):

@@ -38,6 +38,19 @@ def on_startup() -> None:
     logger.info("Embedding fallback: %s", settings.use_embedding_fallback)
     Base.metadata.create_all(bind=engine)
     try:
+        from app.database.session import SessionLocal
+        from app.services.applied_jobs import backfill_applied_ledger
+
+        db = SessionLocal()
+        try:
+            n = backfill_applied_ledger(db)
+            if n:
+                logger.info("Backfilled %d applied job(s) into local ledger", n)
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("Applied-jobs backfill skipped: %s", exc)
+    try:
         reset_postgres_sequences(engine)
     except Exception as exc:
         logger.warning("Sequence reset skipped: %s", exc)

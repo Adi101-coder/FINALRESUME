@@ -61,8 +61,9 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
     setBotRunning(true);
     setStartError("");
     try {
-      const jobs = source
+      const jobs = [...source]
         .filter((match) => match.apply_url)
+        .reverse()
         .map((match) => ({
           title: match.title,
           company: match.company,

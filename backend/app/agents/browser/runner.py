@@ -19,6 +19,7 @@ from app.agents.browser.board_common import (
     apply_from_search as board_apply_from_search,
 )
 from app.agents.browser.job_search import search_jobs_on_platform
+from app.agents.browser.captcha import BotAborted, stop_signaled
 from app.agents.browser.linkedin import apply_linkedin_from_search, apply_linkedin_job_page
 from app.agents.browser.platform_handlers import ApplyOutcome, apply_for_platform, detect_platform
 
@@ -243,6 +244,17 @@ class AutoApplyRunner:
         self.on_apply_result: Callable[[dict], None] | None = None
         self._playwright = None
         self._browser: Browser | None = None
+        self._aborted = False
+
+    def abort(self) -> None:
+        """Close the browser immediately so Stop does not wait out the current job."""
+        self._aborted = True
+        if self._browser:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
 
     def _emit(self, result: dict) -> None:
         if self.on_apply_result:
@@ -673,6 +685,18 @@ class AutoApplyRunner:
             try:
                 applied_keys = self.load_applied_ids("linkedin")
                 for job in linkedin_jobs:
+                    if self._aborted or stop_signaled():
+                        row = {
+                            "title": job.get("title", "?"),
+                            "company": job.get("company", "?"),
+                            "status": "skipped",
+                            "message": "Stopped by user",
+                            "job_id": job.get("job_id"),
+                        }
+                        results.append(row)
+                        self._emit(row)
+                        logger.info("Stop requested — leaving remaining jobs unprocessed")
+                        break
                     url = job.get("apply_url") or job.get("url", "")
                     title = job.get("title", "?")
                     company = job.get("company", "?")
@@ -681,10 +705,24 @@ class AutoApplyRunner:
                         results.append(row)
                         self._emit(row)
                         continue
-                    from app.agents.browser.linkedin import _job_id_from_url
+                    from app.agents.browser.linkedin import _job_id_from_url, looks_like_internal_job_id
                     from app.services.applied_jobs import job_skip_keys, linkedin_job_id_from_url
 
                     lid = _job_id_from_url(url) or linkedin_job_id_from_url(url)
+                    if looks_like_internal_job_id(url):
+                        row = {
+                            "title": title,
+                            "company": company,
+                            "url": url,
+                            "platform": "linkedin",
+                            "status": "skipped",
+                            "message": "Invalid LinkedIn job id — skipped",
+                            "job_id": job.get("job_id"),
+                        }
+                        results.append(row)
+                        self._emit(row)
+                        logger.info("Skip bad job URL %s (%s @ %s)", url, title, company)
+                        continue
                     keys = job_skip_keys(
                         apply_url=url,
                         linkedin_job_id=lid,
@@ -717,7 +755,34 @@ class AutoApplyRunner:
                         }
                         results.append(row)
                         self._emit(row)
+                    except BotAborted:
+                        row = {
+                            "title": title,
+                            "company": company,
+                            "url": url,
+                            "platform": "linkedin",
+                            "status": "skipped",
+                            "message": "Stopped by user",
+                            "job_id": job.get("job_id"),
+                        }
+                        results.append(row)
+                        self._emit(row)
+                        logger.info("Stopped mid-job: %s @ %s", title, company)
+                        break
                     except Exception as exc:
+                        if self._aborted or stop_signaled():
+                            row = {
+                                "title": title,
+                                "company": company,
+                                "url": url,
+                                "platform": "linkedin",
+                                "status": "skipped",
+                                "message": "Stopped by user",
+                                "job_id": job.get("job_id"),
+                            }
+                            results.append(row)
+                            self._emit(row)
+                            break
                         row = {
                             "title": title,
                             "company": company,
@@ -736,6 +801,8 @@ class AutoApplyRunner:
                             applied_keys |= job_skip_keys(apply_url=url, linkedin_job_id=lid)
                         if lid and not row.get("job_id"):
                             row["job_id"] = lid
+                    if self._aborted or stop_signaled():
+                        break
                     time.sleep(delay_sec)
                 self.save_applied_ids("linkedin", applied_keys)
                 self.save_session(context, "linkedin")

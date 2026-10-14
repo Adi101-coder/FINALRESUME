@@ -526,6 +526,33 @@ async def discover_jobs_for_candidate(
             candidate_job_ids.append(row.id)
 
     if candidate_job_ids:
+        from app.services.applied_jobs import linkedin_job_id_from_url, should_skip_applied
+
+        job_rows = db.query(Job).filter(Job.id.in_(candidate_job_ids)).all()
+        job_by_id = {j.id: j for j in job_rows}
+        unapplied_ids: list[int] = []
+        hidden_applied = 0
+        for job_id in candidate_job_ids:
+            job = job_by_id.get(job_id)
+            if job and should_skip_applied(
+                db,
+                candidate_id,
+                apply_url=job.apply_url or "",
+                linkedin_job_id=linkedin_job_id_from_url(job.apply_url or ""),
+                db_job_id=job.id,
+            ):
+                hidden_applied += 1
+                continue
+            unapplied_ids.append(job_id)
+        if hidden_applied:
+            logger.info(
+                "Discovery hid %d already-applied job(s) for candidate_id=%s",
+                hidden_applied,
+                candidate_id,
+            )
+        candidate_job_ids = unapplied_ids
+
+    if candidate_job_ids:
         existing_links = {
             row[0]
             for row in db.query(CandidateJob.job_id)

@@ -3,9 +3,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.database.models import Job
+from app.database.models import Candidate, CandidateJob, Job
 from app.database.session import get_db
-from app.schemas.job import JobCreate, JobResponse
+from app.schemas.job import JobCreate, JobResponse, MatchResult
+from app.services.applied_jobs import linkedin_job_id_from_url, should_skip_applied
 from app.services.deduplication import job_dedup_hash
 from app.services.job_discovery import discover_jobs_for_candidate
 
@@ -58,8 +59,6 @@ async def discover_jobs(
     all_locations: bool = Query(default=False, description="Search all locations (worldwide)"),
     db: Session = Depends(get_db),
 ):
-    from app.database.models import Candidate
-
     if not db.get(Candidate, candidate_id):
         raise HTTPException(status_code=404, detail="Candidate not found.")
     try:
@@ -81,6 +80,88 @@ async def discover_jobs(
         raise HTTPException(status_code=500, detail=f"Job discovery failed: {exc}") from exc
     logger.info("Discovery complete: %s", result)
     return result
+
+
+@router.get("/applied/{candidate_id}")
+def list_applied_jobs_for_candidate(candidate_id: int, db: Session = Depends(get_db)):
+    """Local ledger of jobs already applied to (SQLite + JSON dump)."""
+    if not db.get(Candidate, candidate_id):
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+    from app.services.applied_jobs import list_applied_jobs
+
+    rows = list_applied_jobs(db, candidate_id)
+    return [
+        {
+            "id": r.id,
+            "job_id": r.job_id,
+            "title": r.title,
+            "company": r.company,
+            "location": r.location,
+            "apply_url": r.apply_url,
+            "linkedin_job_id": r.linkedin_job_id,
+            "platform": r.platform,
+            "applied_at": r.applied_at.isoformat() if r.applied_at else None,
+            "notes": r.notes,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/discovered/{candidate_id}", response_model=list[MatchResult])
+def list_discovered_jobs_for_candidate(candidate_id: int, db: Session = Depends(get_db)):
+    """Jobs linked to this candidate from discovery, in list order (oldest link first)."""
+    if not db.get(Candidate, candidate_id):
+        raise HTTPException(status_code=404, detail="Candidate not found.")
+
+    candidate_job_ids = [
+        row[0]
+        for row in db.query(CandidateJob.job_id)
+        .filter(CandidateJob.candidate_id == candidate_id)
+        .order_by(CandidateJob.created_at.asc())
+        .limit(1000)
+        .all()
+    ]
+    if not candidate_job_ids:
+        return []
+
+    jobs = (
+        db.query(Job)
+        .filter(Job.id.in_(candidate_job_ids))
+        .filter(Job.apply_url.like("%linkedin.com%"))
+        .all()
+    )
+    job_by_id = {j.id: j for j in jobs}
+
+    results: list[MatchResult] = []
+    for job_id in candidate_job_ids:
+        job = job_by_id.get(job_id)
+        if not job:
+            continue
+        if should_skip_applied(
+            db,
+            candidate_id,
+            apply_url=job.apply_url or "",
+            linkedin_job_id=linkedin_job_id_from_url(job.apply_url or ""),
+            db_job_id=job.id,
+        ):
+            continue
+        results.append(
+            MatchResult(
+                job_id=job.id,
+                title=job.title,
+                company=job.company,
+                location=job.location,
+                apply_url=job.apply_url,
+                score=0,
+                relevance_score=0,
+                skills_score=0,
+                experience_score=0,
+                embedding_score=0,
+                location_score=0,
+                passed_threshold=True,
+            )
+        )
+    return results
 
 
 @router.get("/{job_id}", response_model=JobResponse)

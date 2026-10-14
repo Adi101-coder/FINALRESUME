@@ -29,6 +29,11 @@ CAPTCHA_TEXT_HINTS = (
 
 _human_event = threading.Event()
 _go_back_event = threading.Event()
+_stop_event = threading.Event()
+
+
+class BotAborted(Exception):
+    """User clicked Stop — abandon the current job immediately."""
 
 
 def captcha_present(page: Page) -> bool:
@@ -49,6 +54,23 @@ def captcha_present(page: Page) -> bool:
     return False
 
 
+def signal_bot_stop() -> None:
+    _stop_event.set()
+
+
+def clear_bot_stop() -> None:
+    _stop_event.clear()
+
+
+def stop_signaled() -> bool:
+    return _stop_event.is_set()
+
+
+def raise_if_stopped() -> None:
+    if _stop_event.is_set():
+        raise BotAborted("Stop requested")
+
+
 def signal_human_ready() -> None:
     """Signal that the human has completed the required action."""
     _human_event.set()
@@ -57,6 +79,11 @@ def signal_human_ready() -> None:
 def signal_go_back() -> None:
     """User wants the bot to click Back in Easy Apply and pause for review."""
     _go_back_event.set()
+
+
+def go_back_pending() -> bool:
+    """True while the user has asked to step back (does not consume the signal)."""
+    return _go_back_event.is_set()
 
 
 def go_back_signaled() -> bool:
@@ -96,6 +123,8 @@ def wait_for_human(page: Page, reason: str, *, timeout_sec: int = 600) -> None:
         if _human_event.is_set():
             _human_event.clear()
             return
+        if stop_signaled():
+            raise BotAborted("Stop requested")
         if not captcha_present(page):
             # CAPTCHA cleared — give user a moment to finish filling fields
             time.sleep(2)
@@ -127,6 +156,9 @@ def pause_for_manual_fill(page: Page, reason: str, *, timeout_sec: int = 60) -> 
         if _human_event.is_set():
             _human_event.clear()
             return
-        time.sleep(1)
-
-    # Full window elapsed — continue automation (user may have filled silently).
+        if go_back_pending():
+            logger.info("Manual fill pause ended early — user requested Go back")
+            return
+        if stop_signaled():
+            raise BotAborted("Stop requested")
+        time.sleep(0.25)

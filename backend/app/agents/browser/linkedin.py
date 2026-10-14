@@ -12,7 +12,15 @@ from typing import Callable
 
 from playwright.sync_api import Locator, Page
 
-from app.agents.browser.captcha import captcha_present, go_back_signaled, pause_for_manual_fill, wait_for_human
+from app.agents.browser.captcha import (
+    BotAborted,
+    captcha_present,
+    go_back_pending,
+    go_back_signaled,
+    pause_for_manual_fill,
+    raise_if_stopped,
+    wait_for_human,
+)
 from app.config import settings
 from app.agents.browser.forms import (
     fill_from_resume_only,
@@ -246,7 +254,7 @@ def _no_apply_reason(page: Page, details: Locator) -> str:
     return f"No Easy Apply button found. {_debug_buttons(details)}"
 
 
-def _click_locator(loc: Locator, *, timeout_ms: int = 8000) -> bool:
+def _click_locator(loc: Locator, *, timeout_ms: int = 8000, force: bool = True) -> bool:
     try:
         if loc.count() == 0:
             return False
@@ -257,6 +265,8 @@ def _click_locator(loc: Locator, *, timeout_ms: int = 8000) -> bool:
             target.click(timeout=timeout_ms)
             return True
         except Exception:
+            if not force:
+                return False
             target.click(timeout=timeout_ms, force=True)
             return True
     except Exception as exc:
@@ -264,19 +274,25 @@ def _click_locator(loc: Locator, *, timeout_ms: int = 8000) -> bool:
         return False
 
 
-def _click_by_patterns(page: Page, patterns: tuple[str, ...], *, scope: Page | Locator | None = None) -> bool:
+def _click_by_patterns(
+    page: Page,
+    patterns: tuple[str, ...],
+    *,
+    scope: Page | Locator | None = None,
+    force: bool = True,
+) -> bool:
     root = scope or page
     for pattern in patterns:
         try:
             btn = root.get_by_role("button", name=re.compile(pattern, re.I))
-            if _click_locator(btn):
+            if _click_locator(btn, force=force):
                 logger.info("Clicked button matching %r", pattern)
                 return True
         except Exception:
             pass
         try:
             btn = root.locator(f'button[aria-label*="{pattern}" i]')
-            if _click_locator(btn):
+            if _click_locator(btn, force=force):
                 logger.info("Clicked aria-label matching %r", pattern)
                 return True
         except Exception:
@@ -285,12 +301,14 @@ def _click_by_patterns(page: Page, patterns: tuple[str, ...], *, scope: Page | L
 
 
 def already_applied(page: Page) -> bool:
-    """Detect jobs the user already applied to (scoped to details panel)."""
+    """Detect jobs the user already applied to (Applied button / confirmation)."""
     details = _job_details_panel(page)
     hints = (
         details.get_by_role("button", name=re.compile(r"^applied$", re.I)),
         details.locator('button[aria-label*="Applied" i]'),
         details.locator(".jobs-apply-button--applied"),
+        page.get_by_role("button", name=re.compile(r"^applied$", re.I)),
+        page.locator(".jobs-apply-button--applied"),
     )
     for loc in hints:
         try:
@@ -300,7 +318,24 @@ def already_applied(page: Page) -> bool:
             continue
     try:
         panel_text = (details.inner_text() or "").lower()
-        if re.search(r"application (submitted|sent)|you applied|applied now", panel_text):
+    except Exception:
+        panel_text = _page_text_lower(page)
+    return bool(
+        re.search(
+            r"already applied|you applied|applied now|application (submitted|sent)",
+            panel_text,
+        )
+    )
+
+
+def applications_closed(page: Page) -> bool:
+    """True when LinkedIn shows the job is no longer accepting applications."""
+    text = _page_text_lower(page)
+    if "no longer accepting" in text or "not currently accepting applications" in text:
+        return True
+    try:
+        badge = page.locator("text=/no longer accepting applications/i")
+        if badge.count() > 0 and badge.first.is_visible():
             return True
     except Exception:
         pass
@@ -350,6 +385,7 @@ def _js_click_easy_apply(details: Locator) -> bool:
 def _wait_for_apply_button(details: Locator, *, timeout_ms: int = 15000) -> Locator | None:
     deadline = time.time() + timeout_ms / 1000
     while time.time() < deadline:
+        raise_if_stopped()
         for selector in APPLY_BUTTON_SELECTORS:
             loc = details.locator(selector)
             try:
@@ -571,6 +607,50 @@ _APPLY_LOAD_ERROR_PHRASES = (
     "experienced an error loading",
 )
 
+_JOB_GONE_PHRASES = (
+    "unable to load the page",
+    "job id provided may not be valid",
+    "job posting has been removed",
+    "this job is no longer available",
+    "this job is no longer accepting applications",
+    "no longer accepting applications",
+    "not currently accepting applications",
+    "no longer accepting",
+    "this posting is no longer available",
+    "we couldn't find this job",
+    "couldn't find the job",
+    "page not found",
+)
+
+
+def _page_text_lower(page: Page) -> str:
+    try:
+        return (page.inner_text("body") or "").lower()
+    except Exception:
+        return ""
+
+
+def job_posting_unavailable(page: Page) -> bool:
+    """True when LinkedIn shows a removed / invalid / closed job page — skip immediately."""
+    if applications_closed(page):
+        return True
+    text = _page_text_lower(page)
+    if any(phrase in text for phrase in _JOB_GONE_PHRASES):
+        return True
+    try:
+        heading = (page.locator("h1, h2").first.inner_text(timeout=800) or "").lower()
+        if "unable to load" in heading or "no longer available" in heading:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def looks_like_internal_job_id(url: str) -> bool:
+    """LinkedIn posting ids are long; a 1–7 digit /jobs/view/N/ is our DB id, not LinkedIn's."""
+    job_id = _job_id_from_url(url)
+    return bool(job_id) and len(job_id) < 8
+
 
 def _apply_load_failed(page: Page) -> bool:
     """Detect LinkedIn's in-modal 'error loading this application' (not job description text)."""
@@ -638,28 +718,170 @@ def _read_dialog_text(page: Page) -> str:
     return ""
 
 
+_BACK_HOLD_JS = """() => {
+  if (window.__rbHoldInstalled) return true;
+  window.__rbHoldInstalled = true;
+  window.__rbHoldMs = window.__rbHoldMs || 30000;
+  window.__rbHoldUntil = window.__rbHoldUntil || 0;
+  const labelOf = (el) => {
+    if (!el) return "";
+    return ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).trim().toLowerCase();
+  };
+  const isBack = (el) => {
+    const t = labelOf(el);
+    return t === "back" || t.startsWith("back ") || t.includes("previous step");
+  };
+  const isAdvance = (el) => {
+    const t = labelOf(el);
+    if (isBack(el)) return false;
+    return /^(next|continue|review|submit)/.test(t) || t.includes("next") || t.includes("submit application") || t.includes("review your application");
+  };
+  const arm = () => { window.__rbHoldUntil = Date.now() + window.__rbHoldMs; };
+  const clear = () => { window.__rbHoldUntil = 0; };
+  document.addEventListener("click", (e) => {
+    const btn = e.target && e.target.closest && e.target.closest("button, [role='button']");
+    if (!btn) return;
+    if (isBack(btn)) { arm(); return; }
+    if (isAdvance(btn)) {
+      // Your Next click always wins — cancel the wait and go forward.
+      if (!window.__rbBotAdvancing) clear();
+    }
+  }, true);
+  return true;
+}"""
+
+
+def _install_back_hold(page: Page) -> None:
+    hold_ms = max(30, int(settings.auto_apply_back_review_sec or 30)) * 1000
+    try:
+        page.evaluate(f"window.__rbHoldMs = {hold_ms}")
+        page.evaluate(_BACK_HOLD_JS)
+    except Exception as exc:
+        logger.debug("Could not install Back-hold script: %s", exc)
+
+
+def _arm_back_hold(page: Page) -> None:
+    try:
+        page.evaluate(
+            "window.__rbHoldUntil = Date.now() + (window.__rbHoldMs || 30000)"
+        )
+    except Exception:
+        pass
+
+
+def _hold_remaining_ms(page: Page) -> int:
+    try:
+        return int(page.evaluate("Math.max(0, (window.__rbHoldUntil || 0) - Date.now())") or 0)
+    except Exception:
+        return 0
+
+
+def _click_easy_apply_back(page: Page, modal: Locator) -> bool:
+    """Click LinkedIn's Easy Apply Back control (footer / aria-label / role)."""
+    for aria in ("Back to previous step", "Back", "Previous"):
+        try:
+            btn = modal.locator(f'button[aria-label="{aria}" i]')
+            if _click_locator(btn):
+                logger.info("User go-back: clicked aria-label %r", aria)
+                return True
+        except Exception:
+            continue
+    if _click_by_patterns(page, MODAL_BACK, scope=modal):
+        logger.info("User go-back: clicked Back via pattern")
+        return True
+    try:
+        footer = modal.locator(
+            "button:has-text('Back'), footer button, .jobs-easy-apply-footer button"
+        )
+        for i in range(min(footer.count(), 8)):
+            loc = footer.nth(i)
+            label = (loc.inner_text() or loc.get_attribute("aria-label") or "").strip().lower()
+            if label in {"back", "previous"} or label.startswith("back"):
+                if _click_locator(loc):
+                    logger.info("User go-back: clicked footer Back %r", label)
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _wait_slice(page: Page, total_ms: int, *, slice_ms: int = 250) -> None:
+    """Wait in short slices so Stop / Go-back is noticed quickly."""
+    remaining = max(0, total_ms)
+    while remaining > 0:
+        raise_if_stopped()
+        if go_back_pending():
+            return
+        step = min(slice_ms, remaining)
+        page.wait_for_timeout(step)
+        remaining -= step
+
+
+def _modal_page_index(page: Page) -> int | None:
+    """Parse LinkedIn's '3/13 pages' indicator so we can detect Back."""
+    blob = _read_dialog_text(page)
+    match = re.search(r"(\d+)\s*/\s*(\d+)", blob)
+    if match:
+        return int(match.group(1))
+    try:
+        modal = _easy_apply_modal(page)
+        text = (modal.inner_text() or "")
+        match = re.search(r"(\d+)\s*/\s*(\d+)", text)
+        if match:
+            return int(match.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def _freeze_on_previous_step(page: Page, *, reason: str = "") -> None:
+    """Stay on this Easy Apply page. Your Next click ends the wait immediately."""
+    _install_back_hold(page)
+    _arm_back_hold(page)
+    remaining = _hold_remaining_ms(page)
+    hold_sec = max(30, int(remaining / 1000) if remaining else int(settings.auto_apply_back_review_sec or 30))
+    start_idx = _modal_page_index(page)
+    logger.info(
+        "Holding %ss on previous Easy Apply page (%s). Click Next to continue now.",
+        hold_sec,
+        reason or "review",
+    )
+    print(
+        f"\n*** Back — reviewing this page for {hold_sec}s. "
+        "Click Next yourself to go forward now; otherwise the bot continues when the timer ends. ***\n"
+    )
+    deadline = time.time() + hold_sec
+    while time.time() < deadline:
+        raise_if_stopped()
+        if _hold_remaining_ms(page) < 250:
+            logger.info("Hold ended early — you clicked Next")
+            return
+        idx = _modal_page_index(page)
+        if start_idx is not None and idx is not None and idx > start_idx:
+            logger.info("Hold ended early — page moved %s→%s", start_idx, idx)
+            try:
+                page.evaluate("window.__rbHoldUntil = 0")
+            except Exception:
+                pass
+            return
+        page.wait_for_timeout(250)
+
+
 def _user_requested_step_back(page: Page, modal: Locator) -> bool:
-    """Click Back when the user asks, then pause so they can review the previous step."""
+    """Click Back when the user asks, then stay on that previous step (no Next)."""
     if not go_back_signaled():
         return False
-    clicked = False
-    for aria in ("Back to previous step", "Back"):
-        btn = modal.locator(f'button[aria-label="{aria}" i]')
-        if _click_locator(btn):
-            clicked = True
-            logger.info("User go-back: clicked aria-label %r", aria)
-            break
+    clicked = _click_easy_apply_back(page, modal)
     if not clicked:
-        clicked = _click_by_patterns(page, MODAL_BACK, scope=modal)
-        if clicked:
-            logger.info("User go-back: clicked Back in Easy Apply modal")
-    page.wait_for_timeout(800 if clicked else 200)
-    pause_for_manual_fill(
-        page,
-        "Review the previous Easy Apply step — the bot will not click for "
-        f"{settings.auto_apply_back_review_sec} seconds.",
-        timeout_sec=settings.auto_apply_back_review_sec,
-    )
+        page.wait_for_timeout(400)
+        modal = _easy_apply_modal(page)
+        clicked = _click_easy_apply_back(page, modal)
+    if clicked:
+        page.wait_for_timeout(900)
+        logger.info("Clicked LinkedIn Back — now freezing on the previous section")
+    else:
+        logger.warning("Go-back requested but Back button was not found — freezing on current step")
+    _freeze_on_previous_step(page, reason="app Go back")
     return True
 
 
@@ -672,6 +894,7 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
     if not _modal_visible(page):
         return APPLY_RESULT_UNSUPPORTED
 
+    _install_back_hold(page)
     modal = _easy_apply_modal(page)
     try:
         preview = (modal.inner_text() or "")[:240].replace("\n", " | ")
@@ -686,10 +909,24 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
     last_step_sig = ""
     same_step_count = 0
     stall_manual_pauses = 0
+    last_page_idx = _modal_page_index(page)
     for step in range(max_steps):
+        raise_if_stopped()
         # Dialog is replaced by LinkedIn between steps — always re-resolve.
         modal = _easy_apply_modal(page)
+        _install_back_hold(page)
+        held = _hold_remaining_ms(page)
+        if held >= 250:
+            logger.info("Back-hold active (%sms left) — not clicking Next", held)
+            page.wait_for_timeout(min(held, 1000))
+            continue
+        page_idx = _modal_page_index(page)
+        if last_page_idx is not None and page_idx is not None and page_idx < last_page_idx:
+            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}")
+            last_page_idx = page_idx
+            continue
         if _user_requested_step_back(page, modal):
+            last_page_idx = _modal_page_index(page) or last_page_idx
             continue
         if captcha_present(page):
             try:
@@ -698,7 +935,18 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
                 return _review_with_screenshot(page)
 
         fill_from_resume_only(page, profile)
+        page_idx = _modal_page_index(page)
+        if last_page_idx is not None and page_idx is not None and page_idx < last_page_idx:
+            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}")
+            last_page_idx = page_idx
+            continue
+        if _user_requested_step_back(page, _easy_apply_modal(page)):
+            last_page_idx = _modal_page_index(page) or last_page_idx
+            continue
         upload_resume(page, resume_path)
+        from app.agents.browser.forms import _fill_phone_country_code
+
+        _fill_phone_country_code(page, profile)
         fixed, invalid = repair_invalid_fields(page, profile, modal)
         if fixed:
             logger.info("Repaired %d invalid modal fields from resume", fixed)
@@ -730,22 +978,36 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
             return APPLY_RESULT_SUBMITTED
 
         modal = _easy_apply_modal(page)
+        page_idx = _modal_page_index(page)
+        if last_page_idx is not None and page_idx is not None and page_idx < last_page_idx:
+            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}")
+            last_page_idx = page_idx
+            continue
         if _user_requested_step_back(page, modal):
+            last_page_idx = _modal_page_index(page) or last_page_idx
+            continue
+        if _hold_remaining_ms(page) >= 250:
             continue
 
         # Advance first (Next/Review), then Submit, and only close via DONE after
         # submission — clicking the modal's X opens LinkedIn's save-draft dialog.
+        advanced = False
+        if _hold_remaining_ms(page) >= 250:
+            continue
         for aria in ("Continue to next step", "Review your application", "Submit application", "Submit"):
             btn = modal.locator(f'button[aria-label="{aria}" i]')
-            if _click_locator(btn):
+            if _click_locator(btn, force=False):
                 logger.info("Clicked aria-label %r", aria)
-                page.wait_for_timeout(2000)
+                _wait_slice(page, 2000)
+                advanced = True
                 break
-        else:
-            if _click_by_patterns(page, MODAL_NEXT, scope=modal):
-                page.wait_for_timeout(1200)
+        if not advanced:
+            if _click_by_patterns(page, MODAL_NEXT, scope=modal, force=False):
+                _wait_slice(page, 1200)
+                advanced = True
             elif _click_by_patterns(page, MODAL_SUBMIT, scope=modal):
-                page.wait_for_timeout(2000)
+                _wait_slice(page, 2000)
+                advanced = True
             elif _click_by_patterns(page, MODAL_DONE, scope=modal):
                 return APPLY_RESULT_SUBMITTED
             else:
@@ -791,7 +1053,14 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
             return APPLY_RESULT_SUBMITTED
 
         _dismiss_blocking_overlays(page)
-        page.wait_for_timeout(800)
+        _wait_slice(page, 800)
+        after_idx = _modal_page_index(page)
+        if last_page_idx is not None and after_idx is not None and after_idx < last_page_idx:
+            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{after_idx}")
+            last_page_idx = after_idx
+            continue
+        if after_idx is not None:
+            last_page_idx = after_idx
 
     return _review_with_screenshot(page)
 
@@ -1046,8 +1315,26 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
     if apply_url != url:
         logger.info("Canonical job URL: %s (was %s)", apply_url, url[:120])
     logger.info("LinkedIn job page apply: %s", apply_url)
+    raise_if_stopped()
+    if looks_like_internal_job_id(apply_url):
+        logger.warning("Skip invalid LinkedIn job URL (internal id): %s", apply_url)
+        return ApplyOutcome(
+            APPLY_RESULT_UNSUPPORTED,
+            "Invalid LinkedIn job id — posting cannot be loaded.",
+            "linkedin",
+            apply_url,
+        )
     _goto_with_retry(page, apply_url)
-    page.wait_for_timeout(3500)
+    _wait_slice(page, 1800)
+    raise_if_stopped()
+    if applications_closed(page) or job_posting_unavailable(page):
+        logger.warning("Skip closed/removed job page: %s", apply_url)
+        return ApplyOutcome(
+            APPLY_RESULT_UNSUPPORTED,
+            "No longer accepting applications — skipped.",
+            "linkedin",
+            apply_url,
+        )
 
     if captcha_present(page):
         wait_for_human(page, "LinkedIn: CAPTCHA detected — solve it, then press ENTER.")
@@ -1056,6 +1343,13 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
         wait_for_human(page, "LinkedIn: log in manually, then press ENTER.")
         _goto_with_retry(page, apply_url)
         page.wait_for_timeout(3000)
+        if applications_closed(page) or job_posting_unavailable(page):
+            return ApplyOutcome(
+                APPLY_RESULT_UNSUPPORTED,
+                "No longer accepting applications — skipped.",
+                "linkedin",
+                apply_url,
+            )
 
     if already_applied(page):
         return ApplyOutcome(APPLY_RESULT_UNSUPPORTED, "Already applied to this job.", "linkedin", apply_url)

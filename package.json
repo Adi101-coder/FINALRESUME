@@ -1,0 +1,9 @@
+{
+  "name": "resumebuild",
+  "private": true,
+  "description": "Run frontend, backend, and worker together",
+  "scripts": {
+    "dev": "bash ./dev.sh",
+    "start": "bash ./dev.sh"
+  }
+}

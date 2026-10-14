@@ -62,6 +62,7 @@ class BotRun:
     stop_requested: bool = False
     error: str | None = None
     _thread: threading.Thread | None = field(default=None, repr=False)
+    _runner: object | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict:
         return {
@@ -173,11 +174,20 @@ class BotRunnerService:
     def stop(self, candidate_id: int) -> dict:
         with self._lock:
             run = self._runs.get(candidate_id)
-            if not run or run.state != BotState.RUNNING:
+            if not run or run.state not in (BotState.RUNNING, BotState.STOPPING):
                 return self.get_status(candidate_id)
             run.stop_requested = True
             run.state = BotState.STOPPING
-        self._log(run, "Stop requested — finishing current job…")
+            runner = run._runner
+        from app.agents.browser.captcha import signal_bot_stop
+
+        signal_bot_stop()
+        if runner is not None and hasattr(runner, "abort"):
+            try:
+                runner.abort()
+            except Exception:
+                logger.debug("Runner abort raised", exc_info=True)
+        self._log(run, "Stop requested — stopping immediately.")
         return self.get_status(candidate_id)
 
     LOGIN_URLS = {
@@ -425,6 +435,9 @@ class BotRunnerService:
         if platform not in PLATFORMS:
             raise RuntimeError(f"Unsupported platform: {platform}")
 
+        from app.agents.browser.captcha import clear_bot_stop
+
+        clear_bot_stop()
         with self._lock:
             existing = self._runs.get(candidate_id)
             if existing and existing.state == BotState.RUNNING:
@@ -538,6 +551,7 @@ class BotRunnerService:
                 candidate_id=run.candidate_id,
                 db=SessionLocal(),
             ) as runner:
+                run._runner = runner
                 runner.on_apply_result = on_result
 
                 if jobs:
@@ -577,11 +591,14 @@ class BotRunnerService:
                             queue.append(j)
                     finally:
                         pre_db.close()
-                    jobs = queue
+                    jobs = list(reversed(queue))
                     if not jobs:
                         self._log(run, "All queued jobs were already applied — nothing to do.")
                     else:
-                        self._log(run, f"Applying to {len(jobs)} job(s) from review queue")
+                        self._log(
+                            run,
+                            f"Applying to {len(jobs)} job(s) from review queue (last in list first)",
+                        )
                         runner.apply_many(jobs, profile, resume_path, delay_sec=delay_sec)
                 elif job_url:
                     self._log(run, f"Single apply: {job_url}")
@@ -627,12 +644,20 @@ class BotRunnerService:
             self._log(run, "Bot finished.")
 
         except Exception as exc:
-            logger.exception("Bot run failed")
-            with self._lock:
-                run.state = BotState.ERROR
-                run.error = str(exc)
-                run.stopped_at = datetime.utcnow().isoformat()
-            self._log(run, f"Bot error: {exc}", level="error")
+            from app.agents.browser.captcha import BotAborted, stop_signaled
+
+            if isinstance(exc, BotAborted) or stop_signaled() or run.stop_requested:
+                with self._lock:
+                    run.state = BotState.IDLE
+                    run.stopped_at = datetime.utcnow().isoformat()
+                self._log(run, "Bot stopped.")
+            else:
+                logger.exception("Bot run failed")
+                with self._lock:
+                    run.state = BotState.ERROR
+                    run.error = str(exc)
+                    run.stopped_at = datetime.utcnow().isoformat()
+                self._log(run, f"Bot error: {exc}", level="error")
         finally:
             db = SessionLocal()
             try:

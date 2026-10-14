@@ -131,6 +131,20 @@ def create_application(payload: ApplicationCreate, db: Session = Depends(get_db)
     from app.services.pipeline_log import step_done
 
     step_done("APPLICATION_SAVED", id=application.id, job_id=payload.job_id, status=payload.status)
+    if payload.status in {"applied", "submitted"}:
+        from app.services.applied_jobs import record_applied_job
+
+        record_applied_job(
+            db,
+            payload.candidate_id,
+            title=job.title,
+            company=job.company,
+            location=job.location or "",
+            apply_url=job.apply_url or "",
+            job_id=job.id,
+            platform=job.source or "linkedin",
+            notes=payload.notes,
+        )
     return _to_response(application, job)
 
 

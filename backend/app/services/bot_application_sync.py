@@ -142,4 +142,18 @@ def record_bot_result(
         job.id,
         app_status,
     )
+    if app_status == "applied":
+        from app.services.applied_jobs import record_applied_job
+
+        record_applied_job(
+            db,
+            candidate_id,
+            title=title,
+            company=company,
+            location=job.location or "",
+            apply_url=apply_url or job.apply_url or "",
+            job_id=job.id,
+            platform=platform,
+            notes=notes,
+        )
     return application

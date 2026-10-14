@@ -232,9 +232,16 @@ export async function discoverJobs(
   return res.json() as Promise<DiscoveryResult>;
 }
 
+/** @deprecated Scoring archived — use listDiscoveredJobs after discovery. */
 export async function matchJobs(candidateId: number) {
   logClick("run_matching", "score all jobs", { candidateId });
   const res = await apiFetch(`/api/matching/${candidateId}`, { method: "POST" }, 180_000);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<MatchResult[]>;
+}
+
+export async function listDiscoveredJobs(candidateId: number) {
+  const res = await apiFetch(`/api/jobs/discovered/${candidateId}`, undefined, 60_000);
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<MatchResult[]>;
 }

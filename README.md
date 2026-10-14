@@ -40,45 +40,49 @@ Job Scraper (LinkedIn) → SQLite/PostgreSQL
 
 ## Quick Start
 
-### 1. Infrastructure (optional)
-
-For PostgreSQL + Redis:
+One command from the repo root (installs deps if needed, then starts **frontend + backend + worker**):
 
 ```bash
-docker compose up -d
-cp .env.example .env
+./dev.sh
 ```
 
-By default the backend uses **SQLite** (`backend/resumebuild.db`) so you can run without Docker.
+Same thing: `make dev` or `npm start`.
 
-### 2. Backend
+Windows:
+
+```powershell
+.\dev.ps1
+```
+
+Then open:
+
+| Service | URL |
+|---------|-----|
+| App | http://localhost:3000 |
+| API | http://localhost:8000 |
+| API docs | http://localhost:8000/docs |
+
+Ctrl+C stops all three. Copy `.env.example` to `.env` (the script does this once) and add `OPENAI_API_KEY` if you want LLM resume parsing.
+
+The worker uses Redis. If Docker is installed, `./dev.sh` starts the Redis service from `docker-compose.yml`. Without Docker, run Redis on port 6379 yourself, or ignore worker errors — the UI and API still work on SQLite.
+
+### Run pieces separately (optional)
 
 ```bash
-cd backend
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-pip install -r requirements.txt
-playwright install chromium
-uvicorn app.main:app --reload --app-dir .
+# Backend
+cd backend && source .venv/bin/activate
+python -m uvicorn app.main:app --reload --app-dir .
+
+# Frontend
+cd frontend && npm run dev
+
+# Worker
+PYTHONPATH=backend:. .venv/bin/python -m celery -A worker.tasks:celery_app worker --loglevel=info
 ```
-
-API docs: http://localhost:8000/docs
-
-Live discovery (no static pool — every run searches selected platforms fresh):
 
 ```bash
-curl -X POST "http://localhost:8000/api/jobs/discover/1?sources=linkedin&fresh=true"
+docker compose up -d   # optional Postgres + Redis
 ```
-
-### 3. Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-UI: http://localhost:3000
 
 ## API Endpoints
 

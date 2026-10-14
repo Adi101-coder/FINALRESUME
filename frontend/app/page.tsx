@@ -19,7 +19,7 @@ import {
 const STEPS = [
   { id: "upload", label: "Upload Resume" },
   { id: "platforms", label: "Select Platforms" },
-  { id: "matches", label: "View Matches" },
+  { id: "matches", label: "Discover Jobs" },
   { id: "apply", label: "Auto-Apply" },
 ];
 
@@ -29,8 +29,8 @@ const FEATURES = [
     desc: "Search terms built from your roles, skills, and experience — not generic tech keywords.",
   },
   {
-    title: "AI Match Scoring",
-    desc: "Every role scored 0–100 on skills, experience, embedding fit, and location alignment.",
+    title: "Profile-Based Discovery",
+    desc: "Search queries built from your resume — discover roles that fit your background.",
   },
   {
     title: "Application Tracking",
@@ -476,7 +476,10 @@ export default function HomePage() {
                 candidateId={candidateId}
                 loading={loading}
                 error={error}
-                onBack={() => setStep("matches")}
+                onBack={() => {
+                  setReviewQueue([]);
+                  setStep("matches");
+                }}
                 reviewQueue={reviewQueue}
                 onRemoveFromQueue={handleRemoveFromQueue}
                 onClearQueue={handleClearQueue}
