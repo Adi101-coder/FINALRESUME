@@ -142,47 +142,57 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
       {(error || startError) && <div className="alert-error mb-6">{startError || error}</div>}
 
       {/* Bot Status */}
-      <div className={`mb-6 rounded-xl border p-4 ${botRunning ? "border-ink bg-ink text-white" : "border-ink-200 bg-ink-50"}`}>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="font-semibold">{botRunning ? "Bot Running" : "Bot Idle"}</p>
+      <div
+        className={`mb-6 rounded-2xl border p-5 ${
+          botRunning ? "border-ink bg-ink text-white" : "border-ink-200 bg-ink-50"
+        }`}
+      >
+        <div className="flex flex-col gap-4">
+          <div className="min-w-0">
+            <p className="font-semibold">{botRunning ? "Bot running" : "Bot idle"}</p>
             <p className="text-sm opacity-75">
               {botStatus?.submitted ?? 0} applied · {botStatus?.skipped ?? 0} skipped · {botStatus?.failed ?? 0} failed
             </p>
             {botStatus?.recent_events?.length ? (
-              <ul className="mt-2 max-h-28 overflow-y-auto text-xs opacity-90 space-y-1">
+              <ul className="mt-3 max-h-32 space-y-2 overflow-y-auto text-xs opacity-90">
                 {botStatus.recent_events
                   .filter((e) => e.result?.status && e.result.status !== "submitted")
                   .slice(-4)
                   .map((e, i) => (
-                    <li key={i}>
-                      {String(e.result?.title ?? "Job")}: {String(e.result?.message ?? e.message ?? "")}
+                    <li key={i} className="break-words leading-snug">
+                      <span className="font-medium">{String(e.result?.title ?? "Job")}</span>
+                      <span className="opacity-80"> — {String(e.result?.message ?? e.message ?? "")}</span>
                     </li>
                   ))}
               </ul>
             ) : null}
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {!botRunning ? (
-              <button onClick={() => handleStartBot()} className="btn-dark">
-                Start Bot{reviewQueue.length ? ` (${reviewQueue.length} jobs)` : ""}
+              <button onClick={() => handleStartBot()} className="btn-dark whitespace-nowrap px-4 py-2 text-sm">
+                Start bot{reviewQueue.length ? ` · ${reviewQueue.length} jobs` : ""}
               </button>
             ) : (
-              <button onClick={handleStopBot} className="btn-outline bg-red-100 text-red-700 border-red-300">
-                Stop Bot
+              <button
+                onClick={handleStopBot}
+                className="btn-outline whitespace-nowrap border-red-300 bg-red-100 px-4 py-2 text-sm text-red-700"
+              >
+                Stop bot
               </button>
             )}
             <button
               onClick={() => void signalGoBack()}
-              className="btn-outline text-sm"
+              className="btn-outline whitespace-nowrap px-4 py-2 text-sm"
+              title="Go back one Easy Apply step and wait 30s (click Next in LinkedIn to skip the wait)"
             >
-              Go back (30s review)
+              Go back
             </button>
             <button
               onClick={() => signalHumanReady().then(() => setBotStatus((s: any) => ({ ...s, state: "running" })))}
-              className="btn-outline text-sm"
+              className="btn-outline whitespace-nowrap px-4 py-2 text-sm"
+              title="Resume after login, CAPTCHA, or fields you filled by hand"
             >
-              Done (login / CAPTCHA / manual fields)
+              I&apos;m done
             </button>
           </div>
         </div>
