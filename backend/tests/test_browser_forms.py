@@ -74,6 +74,18 @@ class TestScreeningAnswers(unittest.TestCase):
         ans = _screening_answer_for_hint("How many years of Python experience?", profile)
         self.assertEqual(ans, "0")
 
+    def test_french_years_of_python(self) -> None:
+        profile = {"skills": ["Python"], "experience": [], "education": []}
+        ans = _screening_answer_for_hint("Depuis combien d'années utilisez-vous Python ?", profile)
+        self.assertEqual(ans, "0")
+
+    def test_hybrid_french(self) -> None:
+        ans = _screening_answer_for_hint(
+            "Accepteriez-vous de travailler à distance et sur site (travail hybride) ?",
+            {"skills": ["Python"]},
+        )
+        self.assertEqual(ans, "Yes")
+
 
 class TestPhoneDefault(unittest.TestCase):
     def test_resume_phone_preferred(self) -> None:

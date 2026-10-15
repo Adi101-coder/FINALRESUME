@@ -11,6 +11,7 @@ import {
   stopBot,
   signalHumanReady,
   signalGoBack,
+  signalSkipJob,
   type AutoApplyConfig,
   type BotStatus,
 } from "@/lib/api";
@@ -353,6 +354,12 @@ export function AutoApplyPanel({ candidateId, onApplicationsChanged }: Props) {
               onClick={() => void signalGoBack().then(() => setMessage("Going back — 30s to review the form."))}
             >
               Go back (30s review)
+            </button>
+            <button
+              className="btn-outline"
+              onClick={() => void signalSkipJob().then(() => setMessage("Skipping this job — continuing the queue."))}
+            >
+              Skip this job
             </button>
             <button
               className="btn-outline"

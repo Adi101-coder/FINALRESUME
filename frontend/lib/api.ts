@@ -450,3 +450,9 @@ export async function signalGoBack() {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+export async function signalSkipJob() {
+  const res = await apiFetch("/api/bot/skip-job", { method: "POST" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

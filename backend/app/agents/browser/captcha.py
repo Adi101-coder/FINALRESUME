@@ -30,10 +30,15 @@ CAPTCHA_TEXT_HINTS = (
 _human_event = threading.Event()
 _go_back_event = threading.Event()
 _stop_event = threading.Event()
+_skip_job_event = threading.Event()
 
 
 class BotAborted(Exception):
     """User clicked Stop — abandon the current job immediately."""
+
+
+class SkipJob(Exception):
+    """User clicked Skip — leave this listing and continue the queue."""
 
 
 def captcha_present(page: Page) -> bool:
@@ -60,6 +65,7 @@ def signal_bot_stop() -> None:
 
 def clear_bot_stop() -> None:
     _stop_event.clear()
+    _skip_job_event.clear()
 
 
 def stop_signaled() -> bool:
@@ -69,6 +75,21 @@ def stop_signaled() -> bool:
 def raise_if_stopped() -> None:
     if _stop_event.is_set():
         raise BotAborted("Stop requested")
+    if _skip_job_event.is_set():
+        _skip_job_event.clear()
+        raise SkipJob("Skip this job")
+
+
+def signal_skip_job() -> None:
+    """Skip only the listing currently in Easy Apply; keep applying to the rest."""
+    _skip_job_event.set()
+
+
+def skip_job_signaled() -> bool:
+    if _skip_job_event.is_set():
+        _skip_job_event.clear()
+        return True
+    return False
 
 
 def signal_human_ready() -> None:
@@ -161,4 +182,6 @@ def pause_for_manual_fill(page: Page, reason: str, *, timeout_sec: int = 60) -> 
             return
         if stop_signaled():
             raise BotAborted("Stop requested")
+        if skip_job_signaled():
+            raise SkipJob("Skip this job")
         time.sleep(0.25)

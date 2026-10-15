@@ -19,7 +19,7 @@ from app.agents.browser.board_common import (
     apply_from_search as board_apply_from_search,
 )
 from app.agents.browser.job_search import search_jobs_on_platform
-from app.agents.browser.captcha import BotAborted, stop_signaled
+from app.agents.browser.captcha import BotAborted, SkipJob, stop_signaled
 from app.agents.browser.linkedin import apply_linkedin_from_search, apply_linkedin_job_page
 from app.agents.browser.platform_handlers import ApplyOutcome, apply_for_platform, detect_platform
 
@@ -755,6 +755,19 @@ class AutoApplyRunner:
                         }
                         results.append(row)
                         self._emit(row)
+                    except SkipJob:
+                        row = {
+                            "title": title,
+                            "company": company,
+                            "url": url,
+                            "platform": "linkedin",
+                            "status": "skipped",
+                            "message": "Skipped by you — moving to the next job.",
+                            "job_id": job.get("job_id"),
+                        }
+                        results.append(row)
+                        self._emit(row)
+                        logger.info("User skipped job: %s @ %s", title, company)
                     except BotAborted:
                         row = {
                             "title": title,

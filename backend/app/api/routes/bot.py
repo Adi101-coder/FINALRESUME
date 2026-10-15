@@ -99,3 +99,11 @@ def signal_go_back():
     from app.agents.browser.captcha import signal_go_back as _signal
     _signal()
     return {"status": "ok", "message": "Go-back signal sent. Bot will step back and pause for review."}
+
+
+@router.post("/skip-job")
+def signal_skip_job():
+    """Skip the current Easy Apply listing only; the queue keeps going."""
+    from app.agents.browser.captcha import signal_skip_job as _signal
+    _signal()
+    return {"status": "ok", "message": "Skip signal sent. Bot will leave this job and continue."}

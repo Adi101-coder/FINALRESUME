@@ -8,6 +8,7 @@ import {
   stopBot,
   signalHumanReady,
   signalGoBack,
+  signalSkipJob,
   type AutoApplyConfig,
   type BotStatus,
 } from "@/lib/api";
@@ -186,6 +187,13 @@ export function AutoApplyStep({ candidateId, loading, error, onBack, reviewQueue
               title="Go back one Easy Apply step and wait 30s (click Next in LinkedIn to skip the wait)"
             >
               Go back
+            </button>
+            <button
+              onClick={() => void signalSkipJob()}
+              className="btn-outline whitespace-nowrap px-4 py-2 text-sm"
+              title="Skip this listing only — the bot continues with the next job"
+            >
+              Skip this job
             </button>
             <button
               onClick={() => signalHumanReady().then(() => setBotStatus((s: any) => ({ ...s, state: "running" })))}

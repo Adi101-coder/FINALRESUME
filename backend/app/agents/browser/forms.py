@@ -171,9 +171,9 @@ def _answer_aliases(answer: str) -> list[str]:
     if low == "immediately":
         aliases.extend(["ASAP", "Immediate", "2 weeks", "Within 2 weeks"])
     if low == "yes":
-        aliases.extend(["Yes, I am", "I am authorized", "Authorized"])
+        aliases.extend(["Yes, I am", "I am authorized", "Authorized", "Oui", "Yes"])
     if low == "no":
-        aliases.extend(["No, I am not", "Not required", "I do not require"])
+        aliases.extend(["No, I am not", "Not required", "I do not require", "Non"])
     return aliases
 
 
@@ -235,6 +235,46 @@ def _select_native_option(select, label: str) -> bool:
     return False
 
 
+def _years_of_skill_answer(hint: str, profile: dict) -> str:
+    """Years for 'how long have you used X' — English and French Easy Apply prompts."""
+    low = (hint or "").lower()
+    years = str(min(20, _profile_years(profile)))
+    years_ask = bool(
+        re.search(
+            r"how many years|years of|years.?experience|years have you|years using|"
+            r"combien d['\u2019 ]?ann[eé]es|depuis combien|ann[eé]es d['\u2019 ]?exp|"
+            r"utilisez-vous|ann[eé]es",
+            low,
+        )
+    )
+    skill_ask = bool(
+        re.search(
+            r"python|aws|amazon web services|java|javascript|react|sql|docker|"
+            r"kubernetes|\bgolang\b|\bnode\b",
+            low,
+        )
+    )
+    senior_blurb = bool(
+        re.search(r"experience as|exp[eé]rience.*(python|aws)|senior dev on", low)
+    )
+    if years_ask or (skill_ask and senior_blurb) or (years_ask and skill_ask):
+        return years
+    if senior_blurb:
+        return years
+    return ""
+
+
+def _hybrid_or_remote_answer(hint: str) -> str:
+    low = (hint or "").lower()
+    if re.search(
+        r"hybride|hybrid|à distance et sur site|remote and on-?site|"
+        r"travailler à distance|work remotely and on.?site",
+        low,
+    ):
+        return "Yes"
+    return ""
+
+
 def resume_value_for_hint(hint: str, profile: dict) -> str:
     """Single source of truth: form values derivable only from the parsed resume."""
     text = re.sub(r"\s+", " ", (hint or "")).strip()
@@ -246,6 +286,13 @@ def resume_value_for_hint(hint: str, profile: dict) -> str:
     if date_pick:
         return date_pick
 
+    years_ans = _years_of_skill_answer(text, profile)
+    if years_ans != "":
+        return years_ans
+    hybrid = _hybrid_or_remote_answer(text)
+    if hybrid:
+        return hybrid
+
     answer = _resume_answer(text, profile)
     if answer:
         return answer
@@ -255,7 +302,7 @@ def resume_value_for_hint(hint: str, profile: dict) -> str:
     for skill in skills[:15]:
         skill_l = skill.lower()
         if skill_l and skill_l in low:
-            if re.search(r"how many years|years of", low):
+            if re.search(r"how many years|years of|combien d['\u2019 ]?ann[eé]es|utilisez-vous", low):
                 return str(years)
             if re.search(r"experience with|proficiency|familiar|knowledge of|have you used", low):
                 return "Yes"
@@ -907,7 +954,11 @@ def _resume_answer(hint: str, profile: dict) -> str:
         (r"\b(company|employer|organization)\b", exp.get("company") or ""),
         (r"\b(city|location)\b", clean_location(profile) or (exp.get("location") or "").strip()),
         (r"skill", ", ".join(skills[:12])),
-        (r"years?.{0,12}experience|how many years", str(_profile_years(profile))),
+        (r"years?.{0,12}experience|how many years|combien d['\u2019 ]?ann[eé]es|depuis combien", str(_profile_years(profile))),
+        (
+            r"hybride|hybrid|à distance et sur site|remote and on-?site",
+            "Yes",
+        ),
         (r"notice|available to start|start date|how soon", (profile.get("notice_period") or "").strip()),
         (r"summary|about you|cover letter|why.*(role|company|interested)|description|responsib", description[:1800]),
         (r"\b(full name|^name$|your name)\b", name),
@@ -944,14 +995,22 @@ def fill_resume_fields(page: Page, profile: dict) -> int:
                 current = (target.input_value() or "").strip()
             if current:
                 continue
-            answer = _resume_answer(_control_hint(target), profile)
+            hint = _control_hint(target)
+            answer = resume_value_for_hint(hint, profile)
             if not answer:
                 continue
             if tag == "select":
                 if _choose_dropdown(target, answer) or _select_answer(target, answer):
                     filled += 1
             else:
-                target.fill(answer[:2000])
+                cap = 2000
+                try:
+                    raw_max = target.get_attribute("maxlength")
+                    if raw_max and str(raw_max).isdigit():
+                        cap = max(1, int(raw_max))
+                except Exception:
+                    pass
+                target.fill(answer[:cap])
                 filled += 1
         except Exception:
             continue

@@ -14,6 +14,7 @@ from playwright.sync_api import Locator, Page
 
 from app.agents.browser.captcha import (
     BotAborted,
+    SkipJob,
     captcha_present,
     go_back_pending,
     go_back_signaled,
@@ -36,6 +37,7 @@ APPLY_RESULT_SUBMITTED = "submitted"
 APPLY_RESULT_REVIEW = "review_required"
 APPLY_RESULT_UNSUPPORTED = "unsupported"
 APPLY_RESULT_FAILED = "failed"
+APPLY_RESULT_SKIPPED = "skipped"
 
 MODAL_NEXT = (
     r"continue to next step",
@@ -1279,6 +1281,25 @@ def apply_linkedin_from_search(
             print(f"  → {status}: {title} @ {company or 'LinkedIn'}")
             if status == APPLY_RESULT_SUBMITTED:
                 applied_this_batch += 1
+        except SkipJob:
+            try:
+                close_easy_apply_modal(page)
+            except Exception:
+                pass
+            results.append(
+                {
+                    "title": title,
+                    "company": company,
+                    "url": page.url,
+                    "job_id": job_id,
+                    "platform": "linkedin",
+                    "status": APPLY_RESULT_SKIPPED,
+                    "message": "Skipped by you — moving to the next job.",
+                }
+            )
+            if on_result:
+                on_result(results[-1])
+            print(f"  → skipped: {title}")
         except Exception as exc:
             logger.exception("Easy Apply failed for job %s", job_id)
             close_easy_apply_modal(page)
@@ -1308,8 +1329,29 @@ def apply_linkedin_from_search(
 def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: str, *, debug: bool = False):
     from app.agents.browser.platform_handlers import ApplyOutcome
 
-    external_ats = _external_ats_from_url(url)
     apply_url = _canonical_linkedin_job_url(url)
+    try:
+        return _apply_linkedin_job_page_inner(page, url, profile, resume_path, apply_url=apply_url, debug=debug)
+    except SkipJob:
+        logger.info("User skipped this job: %s", apply_url)
+        try:
+            close_easy_apply_modal(page)
+        except Exception:
+            pass
+        return ApplyOutcome(
+            APPLY_RESULT_SKIPPED,
+            "Skipped by you — moving to the next job.",
+            "linkedin",
+            apply_url,
+        )
+
+
+def _apply_linkedin_job_page_inner(
+    page: Page, url: str, profile: dict, resume_path: str, *, apply_url: str, debug: bool = False
+):
+    from app.agents.browser.platform_handlers import ApplyOutcome
+
+    external_ats = _external_ats_from_url(url)
     if external_ats:
         logger.info("Job uses external ATS in LinkedIn Easy Apply: %s", external_ats)
     if apply_url != url:
@@ -1418,6 +1460,8 @@ def apply_linkedin_job_page(page: Page, url: str, profile: dict, resume_path: st
         msg = "This posting is not Easy Apply on LinkedIn."
     elif status == APPLY_RESULT_SUBMITTED:
         msg = "Application submitted on LinkedIn."
+    elif status == APPLY_RESULT_SKIPPED:
+        msg = "Skipped by you — moving to the next job."
     else:
         msg = f"LinkedIn apply finished with status={status}"
     return ApplyOutcome(status, msg, "linkedin", apply_url)
