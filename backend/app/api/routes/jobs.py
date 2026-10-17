@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.database.models import Candidate, CandidateJob, Job
+from app.database.models import Application, Candidate, CandidateJob, Job
 from app.database.session import get_db
 from app.schemas.job import JobCreate, JobResponse, MatchResult
 from app.services.applied_jobs import linkedin_job_id_from_url, should_skip_applied
@@ -132,7 +132,11 @@ def list_discovered_jobs_for_candidate(candidate_id: int, db: Session = Depends(
     )
     job_by_id = {j.id: j for j in jobs}
 
-    results: list[MatchResult] = []
+    from app.services.applied_jobs import job_skip_keys
+    from app.services.shown_jobs import mark_jobs_shown, shown_skip_keys, unseen_first
+
+    shown = shown_skip_keys(db, candidate_id)
+    ranked_jobs: list[tuple[set[str], object]] = []
     for job_id in candidate_job_ids:
         job = job_by_id.get(job_id)
         if not job:
@@ -145,6 +149,37 @@ def list_discovered_jobs_for_candidate(candidate_id: int, db: Session = Depends(
             db_job_id=job.id,
         ):
             continue
+        keys = job_skip_keys(
+            apply_url=job.apply_url or "",
+            linkedin_job_id=linkedin_job_id_from_url(job.apply_url or ""),
+            db_job_id=job.id,
+        )
+        ranked_jobs.append((keys, job))
+
+    ordered = unseen_first(ranked_jobs, shown)
+    try:
+        mark_jobs_shown(db, candidate_id, ordered)
+    except Exception:
+        pass
+
+    app_by_job = {
+        row.job_id: row
+        for row in db.query(Application)
+        .filter(
+            Application.candidate_id == candidate_id,
+            Application.job_id.in_([job.id for job in ordered] or [0]),
+        )
+        .all()
+    }
+
+    results: list[MatchResult] = []
+    for job in ordered:
+        app = app_by_job.get(job.id)
+        status = "queued"
+        message = ""
+        if app:
+            status = app.status or "queued"
+            message = (app.notes or "")[:240]
         results.append(
             MatchResult(
                 job_id=job.id,
@@ -159,6 +194,8 @@ def list_discovered_jobs_for_candidate(candidate_id: int, db: Session = Depends(
                 embedding_score=0,
                 location_score=0,
                 passed_threshold=True,
+                apply_status=status,
+                apply_message=message,
             )
         )
     return results

@@ -129,6 +129,20 @@ class AppliedJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ShownJob(Base):
+    """Jobs this candidate has already been shown in Discover (may reappear if unapplied)."""
+
+    __tablename__ = "shown_jobs"
+    __table_args__ = (UniqueConstraint("candidate_id", "skip_key", name="uq_shown_job_skip"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("candidates.id"), index=True)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"), nullable=True)
+    apply_url: Mapped[str] = mapped_column(String(1024), default="")
+    skip_key: Mapped[str] = mapped_column(String(256), default="")
+    shown_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class PlatformSession(Base):
     """Playwright cookie/session state — not passwords."""
 

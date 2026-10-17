@@ -27,6 +27,17 @@ logger = logging.getLogger("app.browser.runner")
 
 DEFAULT_SESSION_DIR = settings.storage_path / "browser_sessions"
 
+
+def linkedin_pw_profile_dir() -> Path:
+    """Dedicated Chromium profile so one LinkedIn login survives server restarts."""
+    path = DEFAULT_SESSION_DIR / "linkedin_pw_profile"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _linkedin_profile_has_cookies(profile_dir: Path) -> bool:
+    return (profile_dir / "Default" / "Cookies").exists() or (profile_dir / "Cookies").exists()
+
 # LinkedIn Easy Apply loads extra APIs that often reject default Playwright Chromium.
 _STEALTH_INIT_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -40,7 +51,51 @@ def default_headless() -> bool:
     """
     import os
 
+    if os.environ.get("AUTO_APPLY_HEADLESS", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    if os.environ.get("AUTO_APPLY_HEADED", "").strip().lower() in {"1", "true", "yes"}:
+        return False
     return sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
+
+
+def _clear_stale_profile_locks(profile_dir: Path) -> None:
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie", "DevToolsActivePort"):
+        path = profile_dir / name
+        try:
+            if path.exists() or path.is_symlink():
+                path.unlink()
+        except Exception:
+            pass
+
+
+def launch_headed_linkedin_context(pw, *, slow_mo_ms: int = 80, storage_state=None):
+    """Always open a visible Playwright Chromium window with the saved LinkedIn profile.
+
+    Does not use the user's daily Google Chrome (that profile is often locked
+    while Chrome is already open, so no apply window appears).
+    """
+    profile_dir = linkedin_pw_profile_dir()
+    _clear_stale_profile_locks(profile_dir)
+    kwargs: dict = {
+        "headless": False if not default_headless() else True,
+        "slow_mo": slow_mo_ms,
+        "viewport": {"width": 1400, "height": 900},
+        "ignore_default_args": ["--enable-automation"],
+        "args": [
+            "--disable-blink-features=AutomationControlled",
+            "--disable-dev-shm-usage",
+        ],
+    }
+    if storage_state and not _linkedin_profile_has_cookies(profile_dir):
+        kwargs["storage_state"] = storage_state
+    context = pw.chromium.launch_persistent_context(str(profile_dir), **kwargs)
+    context.add_init_script(_STEALTH_INIT_SCRIPT)
+    page = context.pages[0] if context.pages else context.new_page()
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
+    return context
 
 BOARD_CONFIGS = {
     "indeed": INDEED_CONFIG,
@@ -237,18 +292,25 @@ class AutoApplyRunner:
     ) -> None:
         self.session_dir = session_dir or DEFAULT_SESSION_DIR
         self.session_dir.mkdir(parents=True, exist_ok=True)
-        self.headless = headless
+        self.headless = bool(headless) if default_headless() else False
         self.slow_mo_ms = slow_mo_ms
         self.candidate_id = candidate_id
         self.db = db
         self.on_apply_result: Callable[[dict], None] | None = None
         self._playwright = None
         self._browser: Browser | None = None
+        self._apply_context: BrowserContext | None = None
         self._aborted = False
 
     def abort(self) -> None:
         """Close the browser immediately so Stop does not wait out the current job."""
         self._aborted = True
+        if self._apply_context:
+            try:
+                self._apply_context.close()
+            except Exception:
+                pass
+            self._apply_context = None
         if self._browser:
             try:
                 self._browser.close()
@@ -262,7 +324,6 @@ class AutoApplyRunner:
 
     def __enter__(self) -> "AutoApplyRunner":
         self._playwright = sync_playwright().start()
-        self._ensure_browser()
         return self
 
     def _ensure_browser(self) -> None:
@@ -296,8 +357,6 @@ class AutoApplyRunner:
             "args": args,
             "ignore_default_args": ["--enable-automation"],
         }
-        if system_chrome_user_data_dir() is not None:
-            launch_kwargs["channel"] = "chrome"
         self._browser = self._playwright.chromium.launch(**launch_kwargs)
 
     def __exit__(self, *args) -> None:
@@ -395,21 +454,33 @@ class AutoApplyRunner:
         return context
 
     def _open_linkedin_context(self) -> BrowserContext:
-        """Use the same real Chrome profile as login when possible.
-
-        Cookie replay into stock Playwright Chromium often loads job search but
-        fails Easy Apply with 'error loading this application' on most jobs.
-        """
+        """Open a visible window using the saved LinkedIn login (not the user's daily Chrome)."""
         if self._playwright is None:
             self._playwright = sync_playwright().start()
-        if not self.headless and system_chrome_user_data_dir():
-            try:
-                context = open_system_chrome_context(self._playwright)
-                logger.info("LinkedIn apply: using system Chrome profile")
-                return context
-            except RuntimeError as exc:
-                logger.warning("LinkedIn apply: system Chrome unavailable (%s) — using saved session", exc)
-        return self._new_context("linkedin")
+        state = self._load_storage_state("linkedin")
+        headed = not self.headless
+        try:
+            context = launch_headed_linkedin_context(
+                self._playwright,
+                slow_mo_ms=self.slow_mo_ms,
+                storage_state=state,
+            )
+            if not headed:
+                logger.warning("LinkedIn apply launched headless — set AUTO_APPLY_HEADED=1 for a window")
+            self._apply_context = context
+            logger.info("LinkedIn apply window opened (saved login profile)")
+            return context
+        except Exception as exc:
+            logger.warning("LinkedIn persistent profile failed (%s) — cookie session fallback", exc)
+        self.headless = False if not default_headless() else self.headless
+        context = self._new_context("linkedin")
+        self._apply_context = context
+        page = context.pages[0] if context.pages else context.new_page()
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        return context
 
     def login_once(self, platform: str, start_url: str) -> None:
         self._ensure_browser()

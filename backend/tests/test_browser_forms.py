@@ -88,8 +88,17 @@ class TestScreeningAnswers(unittest.TestCase):
 
 
 class TestPhoneDefault(unittest.TestCase):
-    def test_resume_phone_preferred(self) -> None:
-        self.assertEqual(phone_for_apply({"phone": "+1 555 0100"}), "+1 555 0100")
+    def test_tech_apply_uses_configured_india_mobile(self) -> None:
+        self.assertEqual(
+            phone_for_apply({"phone": "+1 555 0100", "skills": ["Python", "Selenium"]}),
+            "6387085385",
+        )
+
+    def test_tech_job_title_uses_configured_mobile(self) -> None:
+        self.assertEqual(
+            phone_for_apply({"phone": "9999999999"}, job_title="ETL Tester (Python)"),
+            "6387085385",
+        )
 
     def test_country_from_india_location(self) -> None:
         from app.agents.browser.forms import phone_country_label

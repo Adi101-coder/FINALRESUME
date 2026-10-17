@@ -114,6 +114,21 @@ export type MatchResult = {
   embedding_score: number;
   location_score: number;
   passed_threshold: boolean;
+  apply_status?: string;
+  apply_message?: string;
+};
+
+export type AppliedJobRow = {
+  id: number;
+  job_id: number | null;
+  title: string;
+  company: string;
+  location: string;
+  apply_url: string;
+  linkedin_job_id: string;
+  platform: string;
+  applied_at: string | null;
+  notes: string;
 };
 
 export type Application = {
@@ -244,6 +259,12 @@ export async function listDiscoveredJobs(candidateId: number) {
   const res = await apiFetch(`/api/jobs/discovered/${candidateId}`, undefined, 60_000);
   if (!res.ok) throw new Error(await res.text());
   return res.json() as Promise<MatchResult[]>;
+}
+
+export async function listAppliedJobs(candidateId: number) {
+  const res = await apiFetch(`/api/jobs/applied/${candidateId}`, undefined, 30_000);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<AppliedJobRow[]>;
 }
 
 export async function personalizeResume(candidateId: number, jobId: number) {

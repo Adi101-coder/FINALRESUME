@@ -174,10 +174,13 @@ class BotRunnerService:
     def stop(self, candidate_id: int) -> dict:
         with self._lock:
             run = self._runs.get(candidate_id)
-            if not run or run.state not in (BotState.RUNNING, BotState.STOPPING):
+            if not run:
                 return self.get_status(candidate_id)
             run.stop_requested = True
-            run.state = BotState.STOPPING
+            alive = bool(run._thread and run._thread.is_alive())
+            run.state = BotState.STOPPING if alive else BotState.IDLE
+            if not alive:
+                run.stopped_at = datetime.utcnow().isoformat()
             runner = run._runner
         from app.agents.browser.captcha import signal_bot_stop
 
@@ -267,24 +270,22 @@ class BotRunnerService:
         from playwright.sync_api import sync_playwright
 
         from app.agents.browser.captcha import human_signaled
-        from app.agents.browser.runner import default_headless, open_system_chrome_context
+        from app.agents.browser.runner import default_headless, launch_headed_linkedin_context
 
         login_url = self.LOGIN_URLS[platform]
         self._log(
             run,
-            f"Opening your browser on {platform} (reuses your existing logins from Chrome/Firefox/Safari).",
-        )
-        self._log(
-            run,
-            "IMPORTANT: If you use 'Sign in with Google', make sure you're logged into that Google account in your browser profile. Close ALL Chrome/Firefox/Safari windows before starting.",
+            f"Opening a saved {platform} browser profile — log in once; later runs reuse this session.",
         )
         try:
             with sync_playwright() as pw:
                 try:
-                    context = open_system_chrome_context(pw)
-                    self._log(run, "Your browser profile opened — checking login status…")
-                except RuntimeError as exc:
-                    # Fallback: fresh window with manual login (old behavior).
+                    if platform == "linkedin":
+                        context = launch_headed_linkedin_context(pw, slow_mo_ms=80)
+                        self._log(run, "Opened LinkedIn window — log in here once; later Start bot reuses it.")
+                    else:
+                        raise RuntimeError("no persistent profile")
+                except Exception as exc:
                     self._log(run, f"{exc} Opening a separate login window instead.", level="warning")
                     browser = pw.chromium.launch(
                         headless=default_headless(),
@@ -440,7 +441,8 @@ class BotRunnerService:
         clear_bot_stop()
         with self._lock:
             existing = self._runs.get(candidate_id)
-            if existing and existing.state == BotState.RUNNING:
+            alive = bool(existing and existing._thread and existing._thread.is_alive())
+            if existing and existing.state == BotState.RUNNING and alive:
                 raise RuntimeError("Bot already running for this candidate. Stop it first.")
 
             run = BotRun(
@@ -531,7 +533,11 @@ class BotRunnerService:
                 level="warning",
             )
 
-        self._log(run, f"Starting {platform} bot (continuous={continuous})")
+        self._log(
+            run,
+            f"Starting {platform} bot — opening a visible apply window "
+            "(Chrome for Testing). LinkedIn stays logged in after the first sign-in.",
+        )
 
         def on_result(result: dict) -> None:
             if job_id and not result.get("job_id"):

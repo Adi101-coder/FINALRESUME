@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 def parse_cors_origins(raw: str) -> list[str]:
     value = (raw or "").strip()
     if not value:
-        return ["http://localhost:3000"]
+        return ["http://localhost:3000", "http://localhost:3001"]
     if value.startswith("["):
         parsed = json.loads(value)
         return [str(v).strip() for v in parsed if str(v).strip()]
@@ -44,8 +44,10 @@ class Settings(BaseSettings):
 
     auto_apply_resumes_path: Path = BASE_DIR / "storage" / "auto_apply"
     auto_apply_phone: str = "6387085385"
-    auto_apply_manual_fill_sec: int = 20
+    auto_apply_manual_fill_sec: int = 30
     auto_apply_back_review_sec: int = 30
+    auto_apply_dropdown_sec: int = 30
+    auto_apply_user_idle_sec: int = 12
 
     storage_path: Path = BASE_DIR / "storage"
     # Resolve relative to this package (backend/), not the repo root — in the
@@ -58,7 +60,7 @@ class Settings(BaseSettings):
 
     # Plain string env var — never use list[str] here (Render/pydantic JSON parsing breaks).
     allowed_origins: str = Field(
-        default="http://localhost:3000",
+        default="http://localhost:3000,http://localhost:3001",
         validation_alias=AliasChoices("CORS_ORIGINS", "ALLOWED_ORIGINS"),
     )
 

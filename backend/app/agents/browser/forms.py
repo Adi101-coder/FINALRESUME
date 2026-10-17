@@ -14,12 +14,34 @@ from app.config import settings
 logger = logging.getLogger("app.browser.forms")
 
 
-def phone_for_apply(profile: dict) -> str:
-    """Phone from the resume, else AUTO_APPLY_PHONE so Easy Apply can proceed."""
+_TECH_APPLY_RE = re.compile(
+    r"python|java|javascript|typescript|react|node|sql|aws|docker|kubernetes|"
+    r"software|engineer|developer|programmer|sde|swe|frontend|backend|full.?stack|"
+    r"data|ml|ai|devops|qa|test|selenium|etl|analyst|cloud|cyber|security",
+    re.I,
+)
+
+
+def is_tech_apply(profile: dict, job_title: str = "") -> bool:
+    bits = [
+        job_title,
+        str(profile.get("title") or ""),
+        str(profile.get("headline") or ""),
+        " ".join(str(s) for s in (profile.get("skills") or [])[:25]),
+    ]
+    for exp in (profile.get("experience") or [])[:5]:
+        if isinstance(exp, dict):
+            bits.append(str(exp.get("title") or ""))
+    return bool(_TECH_APPLY_RE.search(" ".join(bits)))
+
+
+def phone_for_apply(profile: dict, job_title: str = "") -> str:
+    """Use 6387085385 on tech Easy Apply; otherwise resume phone, then that default."""
+    configured = (settings.auto_apply_phone or "6387085385").strip() or "6387085385"
+    if is_tech_apply(profile, job_title) or not job_title:
+        return configured
     parsed = (profile.get("phone") or "").strip()
-    if parsed:
-        return parsed
-    return (settings.auto_apply_phone or "").strip()
+    return parsed or configured
 
 
 def phone_country_label(profile: dict) -> str:
@@ -406,12 +428,78 @@ def needs_user_input_for_resume_gaps(page: Page, profile: dict, modal: Locator |
                 checked = group.locator("input[type='radio']:checked, input[type='checkbox']:checked")
                 if checked.count() > 0:
                     continue
+                if re.search(r"upload resume|\.pdf\b|resume", hint, re.I):
+                    continue
                 if not resume_value_for_hint(hint, profile):
                     logger.info("Resume gap (choice question): %r", hint[:100])
                     return True
         except Exception:
             continue
     return False
+
+
+def modal_has_choice_controls(modal: Locator) -> bool:
+    try:
+        return (
+            modal.locator(
+                "select:visible, [role='combobox']:visible, "
+                "input[type='checkbox']:visible, input[type='radio']:visible, "
+                "[aria-haspopup='listbox']:visible"
+            ).count()
+            > 0
+        )
+    except Exception:
+        return False
+
+
+def easy_apply_section_complete(page: Page, profile: dict, modal: Locator | None = None) -> bool:
+    """True when required fields, dropdowns, and checkboxes on this step are filled."""
+    scope = modal if modal is not None else page.locator(
+        "dialog, .jobs-easy-apply-modal, div[role='dialog']"
+    )
+    try:
+        if modal_has_validation_errors(scope):
+            return False
+    except Exception:
+        pass
+    return not needs_user_input_for_resume_gaps(page, profile, scope)
+
+
+def wait_for_dropdown_review(
+    page: Page, profile: dict, modal: Locator | None = None, *, timeout_sec: int | None = None
+) -> None:
+    """Give the user up to timeout_sec on a dropdown/checkbox step; skip if already complete."""
+    import time
+
+    from app.agents.browser.captcha import human_signaled, raise_if_stopped
+
+    scope = modal if modal is not None else page.locator(
+        "dialog, .jobs-easy-apply-modal, div[role='dialog']"
+    )
+    try:
+        if is_resume_document_step(scope):
+            return
+        if not modal_has_choice_controls(scope):
+            return
+    except Exception:
+        return
+    if easy_apply_section_complete(page, profile, scope):
+        return
+    hold = timeout_sec if timeout_sec is not None else int(settings.auto_apply_dropdown_sec or 30)
+    logger.info("Dropdown/choice step — waiting up to %ss unless you finish the fields", hold)
+    deadline = time.time() + hold
+    while time.time() < deadline:
+        raise_if_stopped()
+        if human_signaled():
+            break
+        scope = modal if modal is not None else page.locator(
+            "dialog, .jobs-easy-apply-modal, div[role='dialog']"
+        )
+        if easy_apply_section_complete(page, profile, scope):
+            logger.info("Dropdown step complete — continuing")
+            break
+        page.wait_for_timeout(250)
+    fill_from_resume_only(page, profile)
 
 
 def wait_for_user_if_resume_gaps(
@@ -1394,24 +1482,96 @@ def fill_greenhouse_fields(page: Page, profile: dict) -> int:
     return filled
 
 
+def _easy_apply_root(page: Page) -> Locator:
+    dialog = page.locator("dialog, div[role='dialog'], .jobs-easy-apply-modal")
+    try:
+        if dialog.count() > 0:
+            return dialog.last
+    except Exception:
+        pass
+    return page.locator("body")
+
+
+def is_resume_document_step(scope: Locator) -> bool:
+    try:
+        text = (scope.inner_text() or "").lower()
+    except Exception:
+        return False
+    if "upload resume" in text:
+        return True
+    try:
+        if scope.get_by_role("button", name=re.compile(r"upload resume", re.I)).count() > 0:
+            return True
+    except Exception:
+        pass
+    return bool(re.search(r"\bpdf\b", text) and "resume" in text)
+
+
+def ensure_resume_selected(page: Page) -> bool:
+    """Pick an existing PDF radio so we do not wait on Upload resume."""
+    root = _easy_apply_root(page)
+    try:
+        radios = root.locator("input[type='radio']:visible, [role='radio']:visible")
+        count = min(radios.count(), 16)
+    except Exception:
+        return False
+    first_doc = None
+    for i in range(count):
+        el = radios.nth(i)
+        try:
+            if not el.is_visible():
+                continue
+            label = (el.get_attribute("aria-label") or el.evaluate(
+                """el => {
+                    const row = el.closest('label, li, div') || el.parentElement;
+                    return (row && row.innerText) || '';
+                }"""
+            ) or "").strip()
+            if re.search(r"upload resume", label, re.I):
+                continue
+            if re.search(r"pdf|resume|\d{1,2}/\d{1,2}/\d{2,4}", label, re.I) or label:
+                try:
+                    if el.is_checked():
+                        return True
+                except Exception:
+                    pass
+                if first_doc is None:
+                    first_doc = el
+        except Exception:
+            continue
+    if first_doc is None:
+        return False
+    try:
+        first_doc.check(timeout=2000)
+    except Exception:
+        try:
+            first_doc.click(timeout=2000)
+        except Exception:
+            return False
+    logger.info("Selected an existing resume on the Easy Apply document step")
+    return True
+
+
 def upload_resume(page: Page, resume_path: str | Path) -> bool:
     path = Path(resume_path)
     if not path.exists():
         logger.warning("Resume not found: %s", path)
         return False
     file_path = str(path.resolve())
+    root = _easy_apply_root(page)
 
-    # Current LinkedIn Easy Apply shows a button ("Upload resume") that opens
-    # the system file picker. There is no usable file input until that click.
+    if ensure_resume_selected(page):
+        logger.info("Resume already on file — skipping upload")
+        return True
+
+    # Only open the system picker when LinkedIn has no saved PDF yet.
     try:
-        dialog = page.locator("div[role='dialog'], .jobs-easy-apply-modal").last
-        root = dialog if dialog.count() > 0 else page
         button = root.get_by_role("button", name=re.compile(r"upload resume", re.I))
         if button.count() > 0 and button.first.is_visible():
-            with page.expect_file_chooser(timeout=8000) as chooser_info:
-                button.first.click(timeout=4000)
+            with page.expect_file_chooser(timeout=4000) as chooser_info:
+                button.first.click(timeout=3000)
             chooser_info.value.set_files(file_path)
-            page.wait_for_timeout(1200)
+            page.wait_for_timeout(400)
             logger.info("Uploaded resume via Upload resume button: %s", path.name)
             return True
     except Exception as exc:

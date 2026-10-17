@@ -140,6 +140,14 @@ def is_overqualified(job: dict, years: float | None) -> bool:
         return False
     title = str(job.get("title") or "")
     req = job_required_years(job)
+    if years < 2:
+        # Fresher / student: hide roles that ask for real experience or seniority.
+        if req is not None and req >= 2:
+            return True
+        if title_seniority(title) == "senior":
+            return True
+        if re.search(r"\b([2-9]|\d{2})\+?\s*years?\b", title, re.I):
+            return True
     if req is not None and req > years + 2:
         return True
     level = title_seniority(title)

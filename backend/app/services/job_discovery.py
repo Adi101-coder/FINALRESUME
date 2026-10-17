@@ -66,9 +66,21 @@ def _experience_select(matched: list[dict], profile: dict | None) -> list[dict]:
 
     years = estimate_experience_years(profile)
     if years is None:
-        return matched
+        years = 0.0
     before = len(matched)
     suited = [j for j in matched if not is_overqualified(j, years)]
+    if years < 2:
+        from app.services.experience_level import title_seniority
+
+        def _fresher_rank(job: dict) -> int:
+            level = title_seniority(str(job.get("title") or ""))
+            if level == "entry":
+                return 0
+            if level == "senior":
+                return 2
+            return 1
+
+        suited.sort(key=_fresher_rank)
     if not suited:
         return matched
     if len(suited) >= min(20, len(matched)):
@@ -101,6 +113,15 @@ _REMOTE_DESC = re.compile(
 )
 _HYBRID_PAT = re.compile(r"\bhybrid\b", re.I)
 _ONSITE_PAT = re.compile(r"on[\s-]?site|in[\s-]?office", re.I)
+_INDIA_LOC = re.compile(
+    r"\bindia\b|jaipur|delhi|mumbai|bengaluru|bangalore|hyderabad|pune|chennai|"
+    r"kolkata|noida|gurgaon|gurugram|ahmedabad|indore|lucknow|kochi|chandigarh|rajasthan",
+    re.I,
+)
+
+
+def _looks_like_india(location: str) -> bool:
+    return bool(_INDIA_LOC.search(location or ""))
 
 
 def _work_type_match(remote_type: str, location: str, description: str, title: str = "") -> bool:
@@ -356,6 +377,10 @@ async def discover_jobs_for_candidate(
             raw_loc = [p.strip() for p in raw_loc.split("\n") if p.strip()][-1]
         location_hint = " ".join(raw_loc.split())[:80]
         location_mode = "resume"
+        if _looks_like_india(location_hint):
+            # Resume city (e.g. Jaipur) was pinning every search. Fresher discovery is India-wide.
+            location_hint = "India"
+            location_mode = "india"
 
     step(
         "BUILD_QUERIES",
@@ -551,6 +576,28 @@ async def discover_jobs_for_candidate(
                 candidate_id,
             )
         candidate_job_ids = unapplied_ids
+
+    if candidate_job_ids:
+        from app.services.applied_jobs import job_skip_keys, linkedin_job_id_from_url
+        from app.services.shown_jobs import shown_skip_keys, unseen_first
+
+        shown = shown_skip_keys(db, candidate_id)
+        tagged: list[tuple[set[str], int]] = []
+        for job_id in candidate_job_ids:
+            job = job_by_id.get(job_id)
+            if not job:
+                continue
+            tagged.append(
+                (
+                    job_skip_keys(
+                        apply_url=job.apply_url or "",
+                        linkedin_job_id=linkedin_job_id_from_url(job.apply_url or ""),
+                        db_job_id=job.id,
+                    ),
+                    job_id,
+                )
+            )
+        candidate_job_ids = unseen_first(tagged, shown)
 
     if candidate_job_ids:
         existing_links = {

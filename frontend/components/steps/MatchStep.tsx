@@ -10,6 +10,31 @@ const JOB_TYPES = [
   { key: "hybrid", label: "Hybrid" },
 ];
 
+const INDIA_PLACES: { state: string; cities: string[] }[] = [
+  { state: "Delhi", cities: ["New Delhi", "Delhi"] },
+  { state: "Maharashtra", cities: ["Mumbai", "Pune", "Navi Mumbai", "Thane", "Nagpur", "Nashik"] },
+  { state: "Karnataka", cities: ["Bengaluru", "Mysuru", "Mangaluru", "Hubballi"] },
+  { state: "Telangana", cities: ["Hyderabad", "Warangal"] },
+  { state: "Tamil Nadu", cities: ["Chennai", "Coimbatore", "Madurai"] },
+  { state: "West Bengal", cities: ["Kolkata"] },
+  { state: "Gujarat", cities: ["Ahmedabad", "Surat", "Vadodara", "Rajkot"] },
+  { state: "Rajasthan", cities: ["Jaipur", "Udaipur", "Jodhpur", "Kota"] },
+  { state: "Uttar Pradesh", cities: ["Noida", "Lucknow", "Ghaziabad", "Kanpur", "Agra", "Varanasi"] },
+  { state: "Haryana", cities: ["Gurugram", "Faridabad"] },
+  { state: "Chandigarh", cities: ["Chandigarh"] },
+  { state: "Madhya Pradesh", cities: ["Indore", "Bhopal"] },
+  { state: "Kerala", cities: ["Kochi", "Thiruvananthapuram"] },
+  { state: "Andhra Pradesh", cities: ["Visakhapatnam", "Vijayawada"] },
+  { state: "Odisha", cities: ["Bhubaneswar"] },
+  { state: "Bihar", cities: ["Patna"] },
+  { state: "Jharkhand", cities: ["Ranchi"] },
+  { state: "Chhattisgarh", cities: ["Raipur"] },
+  { state: "Punjab", cities: ["Ludhiana", "Amritsar"] },
+  { state: "Uttarakhand", cities: ["Dehradun"] },
+  { state: "Assam", cities: ["Guwahati"] },
+  { state: "Goa", cities: ["Panaji"] },
+];
+
 type Props = {
   candidateId: number;
   profile: any;
@@ -54,7 +79,22 @@ export function MatchStep({
   const [jobs, setJobs] = useState<MatchResult[]>([]);
   const [discovering, setDiscovering] = useState(false);
   const [info, setInfo] = useState("");
+  const [stateName, setStateName] = useState("");
+  const [cityName, setCityName] = useState("");
   const autoStarted = useRef(false);
+
+  const citiesForState = INDIA_PLACES.find((p) => p.state === stateName)?.cities ?? [];
+
+  const applyPlace = (state: string, city: string) => {
+    setStateName(state);
+    setCityName(city);
+    onAllLocationsChange(false);
+    if (!state) {
+      onSearchLocationChange("");
+      return;
+    }
+    onSearchLocationChange(city ? `${city}, ${state}, India` : `${state}, India`);
+  };
 
   const handleDiscover = async () => {
     const platforms = selectedPlatforms.length > 0 ? selectedPlatforms : ["linkedin"];
@@ -133,16 +173,34 @@ export function MatchStep({
           </div>
         </div>
         <div className="mt-4">
-          <p className="mb-2 text-sm font-medium text-ink">Search location</p>
+          <p className="mb-2 text-sm font-medium text-ink">Where to search</p>
           <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              value={searchLocation}
-              onChange={(e) => onSearchLocationChange(e.target.value)}
+            <select
+              value={stateName}
               disabled={allLocations}
-              placeholder="e.g. Bengaluru, India"
-              className="w-64 max-w-full rounded-xl border border-ink-200 bg-white px-3 py-1.5 text-xs text-ink-600 placeholder:text-ink-400 focus:border-ink focus:outline-none disabled:opacity-50"
-            />
+              onChange={(e) => applyPlace(e.target.value, "")}
+              className="rounded-xl border border-ink-200 bg-white px-3 py-1.5 text-xs text-ink-600 disabled:opacity-50"
+            >
+              <option value="">All of India</option>
+              {INDIA_PLACES.map((p) => (
+                <option key={p.state} value={p.state}>
+                  {p.state}
+                </option>
+              ))}
+            </select>
+            <select
+              value={cityName}
+              disabled={allLocations || !stateName}
+              onChange={(e) => applyPlace(stateName, e.target.value)}
+              className="rounded-xl border border-ink-200 bg-white px-3 py-1.5 text-xs text-ink-600 disabled:opacity-50"
+            >
+              <option value="">{stateName ? `Whole ${stateName}` : "Pick a state first"}</option>
+              {citiesForState.map((city) => (
+                <option key={city} value={city}>
+                  {city}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               onClick={() => onAllLocationsChange(!allLocations)}
@@ -150,25 +208,15 @@ export function MatchStep({
                 allLocations ? "border-ink bg-ink text-white" : "border-ink-200 bg-white text-ink-600"
               }`}
             >
-              🌍 All locations
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onAllLocationsChange(false);
-                onSearchLocationChange("");
-              }}
-              className="btn-outline text-xs"
-            >
-              Resume location
+              Worldwide
             </button>
           </div>
           <p className="mt-1.5 text-xs text-ink-400">
             {allLocations
               ? "Worldwide search — location filter off."
               : searchLocation.trim()
-                ? `Searching in ${searchLocation.trim()} (job search only).`
-                : "Using the location from your resume."}
+                ? `Searching in ${searchLocation.trim()}. Fresher roles are listed first.`
+                : "All of India. Pick a state, then a tier 1 or tier 2 city if you want to narrow it."}
           </p>
         </div>
       </div>
@@ -232,6 +280,21 @@ function JobCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
             <h3 className="font-semibold text-ink">{match.title}</h3>
+            {match.apply_status === "applied" && (
+              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-600 text-white">
+                Applied
+              </span>
+            )}
+            {match.apply_status === "skipped" && (
+              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-ink-100 text-ink-600">
+                Skipped
+              </span>
+            )}
+            {match.apply_status === "failed" && (
+              <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+                Failed
+              </span>
+            )}
             {queued && (
               <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-600 text-white">
                 ✓ Selected

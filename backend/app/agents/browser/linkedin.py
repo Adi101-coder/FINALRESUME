@@ -18,16 +18,20 @@ from app.agents.browser.captcha import (
     captcha_present,
     go_back_pending,
     go_back_signaled,
+    human_signaled,
     pause_for_manual_fill,
     raise_if_stopped,
     wait_for_human,
 )
 from app.config import settings
 from app.agents.browser.forms import (
+    easy_apply_section_complete,
     fill_from_resume_only,
+    is_resume_document_step,
     needs_user_input_for_resume_gaps,
     repair_invalid_fields,
     upload_resume,
+    wait_for_dropdown_review,
     wait_for_user_if_resume_gaps,
 )
 
@@ -42,8 +46,8 @@ APPLY_RESULT_SKIPPED = "skipped"
 MODAL_NEXT = (
     r"continue to next step",
     r"^next$",
-    r"continue",
-    r"review",
+    r"^continue$",
+    r"^review$",
     r"review your application",
     r"save and continue",
     r"save & continue",
@@ -480,6 +484,49 @@ def click_easy_apply(page: Page, *, debug: bool = False) -> bool:
 _MODAL_CONTROL_RE = re.compile(r"next|submit|review|continue|done", re.I)
 
 
+def _dialog_is_safety_reminder(dialog: Locator) -> bool:
+    try:
+        text = (dialog.inner_text() or "").lower()
+    except Exception:
+        return False
+    return "job search safety reminder" in text or "report suspicious jobs" in text
+
+
+def _dismiss_job_safety_reminder(page: Page) -> bool:
+    """LinkedIn often inserts this overlay instead of the Easy Apply form.
+
+    It contains the word “review” (review the employer’s website) — a loose
+    Next/Review matcher used to click that and stall on the job page.
+    """
+    dismissed = False
+    try:
+        dialogs = page.locator("dialog, .jobs-easy-apply-modal, div[role='dialog']")
+        for i in range(min(dialogs.count(), 8)):
+            d = dialogs.nth(i)
+            try:
+                if not d.is_visible() or not _dialog_is_safety_reminder(d):
+                    continue
+            except Exception:
+                continue
+            logger.info("Dismissing LinkedIn job-search safety reminder")
+            if _click_by_patterns(
+                page,
+                (r"^got it$", r"^ok$", r"^okay$", r"^continue$", r"^i understand$", r"^dismiss$"),
+                scope=d,
+            ):
+                dismissed = True
+            else:
+                try:
+                    page.keyboard.press("Escape")
+                    dismissed = True
+                except Exception:
+                    pass
+            page.wait_for_timeout(400)
+    except Exception:
+        pass
+    return dismissed
+
+
 def _easy_apply_modal(page: Page) -> Locator:
     """Locate the Easy Apply application modal.
 
@@ -494,7 +541,7 @@ def _easy_apply_modal(page: Page) -> Locator:
         for i in range(min(count, 6)):
             d = dialogs.nth(i)
             try:
-                if d.is_visible():
+                if d.is_visible() and not _dialog_is_safety_reminder(d):
                     visible.append(d)
             except Exception:
                 continue
@@ -515,13 +562,15 @@ def _easy_apply_modal(page: Page) -> Locator:
             return visible[0]
     except Exception:
         pass
-    return page.locator("dialog, .jobs-easy-apply-modal, div[role='dialog']").first
+    return page.locator(".jobs-easy-apply-content, .jobs-easy-apply-modal").first
 
 
 def _modal_visible(page: Page) -> bool:
     try:
         modal = _easy_apply_modal(page)
-        return modal.count() > 0 and modal.is_visible()
+        if modal.count() == 0 or not modal.is_visible():
+            return False
+        return not _dialog_is_safety_reminder(modal)
     except Exception:
         return False
 
@@ -594,6 +643,7 @@ def _submission_confirmed(page: Page, modal_text: str = "", *, settle_sec: float
 def _dismiss_blocking_overlays(page: Page) -> None:
     # NOTE: never match dismiss/close here — that is the Easy Apply modal's own X,
     # which opens LinkedIn's "Save this application?" dialog and breaks the run.
+    _dismiss_job_safety_reminder(page)
     _click_by_patterns(page, (r"^not now$", r"^no thanks$"))
 
 
@@ -725,6 +775,9 @@ _BACK_HOLD_JS = """() => {
   window.__rbHoldInstalled = true;
   window.__rbHoldMs = window.__rbHoldMs || 30000;
   window.__rbHoldUntil = window.__rbHoldUntil || 0;
+  window.__rbUserIdleMs = window.__rbUserIdleMs || 12000;
+  window.__rbUserBusyUntil = window.__rbUserBusyUntil || 0;
+  window.__rbBotBusy = window.__rbBotBusy || false;
   const labelOf = (el) => {
     if (!el) return "";
     return ((el.innerText || "") + " " + (el.getAttribute("aria-label") || "")).trim().toLowerCase();
@@ -738,16 +791,40 @@ _BACK_HOLD_JS = """() => {
     if (isBack(el)) return false;
     return /^(next|continue|review|submit)/.test(t) || t.includes("next") || t.includes("submit application") || t.includes("review your application");
   };
+  const isField = (el) => {
+    if (!el || !el.tagName) return false;
+    const tag = el.tagName.toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+  };
   const arm = () => { window.__rbHoldUntil = Date.now() + window.__rbHoldMs; };
   const clear = () => { window.__rbHoldUntil = 0; };
+  const bumpUser = () => {
+    if (window.__rbBotBusy) return;
+    window.__rbUserBusyUntil = Date.now() + window.__rbUserIdleMs;
+  };
   document.addEventListener("click", (e) => {
     const btn = e.target && e.target.closest && e.target.closest("button, [role='button']");
-    if (!btn) return;
-    if (isBack(btn)) { arm(); return; }
-    if (isAdvance(btn)) {
-      // Your Next click always wins — cancel the wait and go forward.
-      if (!window.__rbBotAdvancing) clear();
+    if (btn) {
+      if (isBack(btn)) { arm(); return; }
+      if (isAdvance(btn)) {
+        if (!window.__rbBotAdvancing) {
+          clear();
+          window.__rbUserBusyUntil = 0;
+        }
+        return;
+      }
     }
+    if (e.isTrusted && !window.__rbBotBusy) bumpUser();
+  }, true);
+  ["keydown", "keyup", "input", "paste", "change", "compositionupdate"].forEach((ev) => {
+    document.addEventListener(ev, (e) => {
+      if (!e.isTrusted || window.__rbBotBusy) return;
+      bumpUser();
+    }, true);
+  });
+  document.addEventListener("focusin", (e) => {
+    if (window.__rbBotBusy) return;
+    if (isField(e.target)) bumpUser();
   }, true);
   return true;
 }"""
@@ -755,8 +832,9 @@ _BACK_HOLD_JS = """() => {
 
 def _install_back_hold(page: Page) -> None:
     hold_ms = max(30, int(settings.auto_apply_back_review_sec or 30)) * 1000
+    idle_ms = max(5, int(settings.auto_apply_user_idle_sec or 12)) * 1000
     try:
-        page.evaluate(f"window.__rbHoldMs = {hold_ms}")
+        page.evaluate(f"window.__rbHoldMs = {hold_ms}; window.__rbUserIdleMs = {idle_ms}")
         page.evaluate(_BACK_HOLD_JS)
     except Exception as exc:
         logger.debug("Could not install Back-hold script: %s", exc)
@@ -773,9 +851,55 @@ def _arm_back_hold(page: Page) -> None:
 
 def _hold_remaining_ms(page: Page) -> int:
     try:
-        return int(page.evaluate("Math.max(0, (window.__rbHoldUntil || 0) - Date.now())") or 0)
+        return int(
+            page.evaluate(
+                """() => {
+                  const now = Date.now();
+                  const back = Math.max(0, (window.__rbHoldUntil || 0) - now);
+                  const typed = Math.max(0, (window.__rbUserBusyUntil || 0) - now);
+                  const el = document.activeElement;
+                  const inModal = el && el.closest && el.closest("dialog, [role='dialog'], .jobs-easy-apply-modal");
+                  const tag = el && el.tagName ? el.tagName.toLowerCase() : "";
+                  const focused = Boolean(
+                    inModal && (tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable)
+                  );
+                  if (focused && !window.__rbBotBusy) return Math.max(back, typed, 800);
+                  return Math.max(back, typed);
+                }"""
+            )
+            or 0
+        )
     except Exception:
         return 0
+
+
+def _release_user_edit_hold(page: Page) -> None:
+    try:
+        page.evaluate("window.__rbUserBusyUntil = 0; window.__rbHoldUntil = 0;")
+    except Exception:
+        pass
+
+
+def _bot_fill_begin(page: Page) -> None:
+    try:
+        page.evaluate("window.__rbBotBusy = true")
+    except Exception:
+        pass
+
+
+def _bot_fill_end(page: Page) -> None:
+    try:
+        page.evaluate(
+            """() => {
+              window.__rbBotBusy = false;
+              const el = document.activeElement;
+              if (el && el.blur && el.closest && el.closest("dialog, [role='dialog'], .jobs-easy-apply-modal")) {
+                el.blur();
+              }
+            }"""
+        )
+    except Exception:
+        pass
 
 
 def _click_easy_apply_back(page: Page, modal: Locator) -> bool:
@@ -836,25 +960,37 @@ def _modal_page_index(page: Page) -> int | None:
     return None
 
 
-def _freeze_on_previous_step(page: Page, *, reason: str = "") -> None:
-    """Stay on this Easy Apply page. Your Next click ends the wait immediately."""
+def _freeze_on_previous_step(page: Page, *, reason: str = "", profile: dict | None = None) -> None:
+    """Stay on this Easy Apply page. Ends early if you click Next or finish every field."""
     _install_back_hold(page)
     _arm_back_hold(page)
     remaining = _hold_remaining_ms(page)
     hold_sec = max(30, int(remaining / 1000) if remaining else int(settings.auto_apply_back_review_sec or 30))
     start_idx = _modal_page_index(page)
     logger.info(
-        "Holding %ss on previous Easy Apply page (%s). Click Next to continue now.",
+        "Holding %ss on previous Easy Apply page (%s). Completing the section or clicking Next ends the wait.",
         hold_sec,
         reason or "review",
     )
     print(
         f"\n*** Back — reviewing this page for {hold_sec}s. "
-        "Click Next yourself to go forward now; otherwise the bot continues when the timer ends. ***\n"
+        "If every box/field is filled, the bot continues; otherwise click Next or wait out the timer. ***\n"
     )
     deadline = time.time() + hold_sec
     while time.time() < deadline:
         raise_if_stopped()
+        if profile is not None:
+            try:
+                modal = _easy_apply_modal(page)
+                if easy_apply_section_complete(page, profile, modal):
+                    logger.info("Hold ended early — section is complete")
+                    try:
+                        page.evaluate("window.__rbHoldUntil = 0")
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
         if _hold_remaining_ms(page) < 250:
             logger.info("Hold ended early — you clicked Next")
             return
@@ -869,7 +1005,7 @@ def _freeze_on_previous_step(page: Page, *, reason: str = "") -> None:
         page.wait_for_timeout(250)
 
 
-def _user_requested_step_back(page: Page, modal: Locator) -> bool:
+def _user_requested_step_back(page: Page, modal: Locator, profile: dict | None = None) -> bool:
     """Click Back when the user asks, then stay on that previous step (no Next)."""
     if not go_back_signaled():
         return False
@@ -883,13 +1019,15 @@ def _user_requested_step_back(page: Page, modal: Locator) -> bool:
         logger.info("Clicked LinkedIn Back — now freezing on the previous section")
     else:
         logger.warning("Go-back requested but Back button was not found — freezing on current step")
-    _freeze_on_previous_step(page, reason="app Go back")
+    _freeze_on_previous_step(page, reason="app Go back", profile=profile)
     return True
 
 
 def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, max_steps: int = 16) -> str:
     """Walk through LinkedIn Easy Apply modal — Next → Review → Submit."""
+    _dismiss_job_safety_reminder(page)
     for _ in range(30):
+        _dismiss_job_safety_reminder(page)
         if _modal_visible(page):
             break
         page.wait_for_timeout(300)
@@ -919,15 +1057,19 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         _install_back_hold(page)
         held = _hold_remaining_ms(page)
         if held >= 250:
-            logger.info("Back-hold active (%sms left) — not clicking Next", held)
-            page.wait_for_timeout(min(held, 1000))
+            if human_signaled():
+                _release_user_edit_hold(page)
+                logger.info("User signaled done — bot may continue")
+            else:
+                logger.info("Waiting — you are editing the form (%sms). Bot will not click Next/Submit.", held)
+                page.wait_for_timeout(min(held, 800))
             continue
         page_idx = _modal_page_index(page)
         if last_page_idx is not None and page_idx is not None and page_idx < last_page_idx:
-            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}")
+            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}", profile=profile)
             last_page_idx = page_idx
             continue
-        if _user_requested_step_back(page, modal):
+        if _user_requested_step_back(page, modal, profile):
             last_page_idx = _modal_page_index(page) or last_page_idx
             continue
         if captcha_present(page):
@@ -936,30 +1078,43 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
             except TimeoutError:
                 return _review_with_screenshot(page)
 
-        fill_from_resume_only(page, profile)
-        page_idx = _modal_page_index(page)
-        if last_page_idx is not None and page_idx is not None and page_idx < last_page_idx:
-            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}")
-            last_page_idx = page_idx
-            continue
-        if _user_requested_step_back(page, _easy_apply_modal(page)):
-            last_page_idx = _modal_page_index(page) or last_page_idx
-            continue
-        upload_resume(page, resume_path)
-        from app.agents.browser.forms import _fill_phone_country_code
-
-        _fill_phone_country_code(page, profile)
-        fixed, invalid = repair_invalid_fields(page, profile, modal)
-        if fixed:
-            logger.info("Repaired %d invalid modal fields from resume", fixed)
-            page.wait_for_timeout(400)
         modal = _easy_apply_modal(page)
-        if needs_user_input_for_resume_gaps(page, profile, modal):
-            logger.info("Pausing — some required fields are not on the uploaded resume")
-            wait_for_user_if_resume_gaps(page, profile, modal)
-            modal = _easy_apply_modal(page)
-            if needs_user_input_for_resume_gaps(page, profile, modal):
-                continue
+        resume_step = is_resume_document_step(modal)
+        _bot_fill_begin(page)
+        try:
+            if resume_step:
+                upload_resume(page, resume_path)
+                logger.info("Resume document step — using a listed PDF, then Next (max ~10s)")
+            else:
+                fill_from_resume_only(page, profile)
+                page_idx = _modal_page_index(page)
+                if last_page_idx is not None and page_idx is not None and page_idx < last_page_idx:
+                    _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}", profile=profile)
+                    last_page_idx = page_idx
+                    continue
+                if _user_requested_step_back(page, _easy_apply_modal(page), profile):
+                    last_page_idx = _modal_page_index(page) or last_page_idx
+                    continue
+                upload_resume(page, resume_path)
+                from app.agents.browser.forms import _fill_phone_country_code
+
+                _fill_phone_country_code(page, profile)
+                wait_for_dropdown_review(page, profile, modal)
+                fixed, invalid = repair_invalid_fields(page, profile, modal)
+                if fixed:
+                    logger.info("Repaired %d invalid modal fields from resume", fixed)
+                    page.wait_for_timeout(400)
+                modal = _easy_apply_modal(page)
+                if needs_user_input_for_resume_gaps(page, profile, modal):
+                    logger.info("Pausing — some required fields are not on the uploaded resume")
+                    _bot_fill_end(page)
+                    wait_for_user_if_resume_gaps(page, profile, modal)
+                    _bot_fill_begin(page)
+                    modal = _easy_apply_modal(page)
+                    if needs_user_input_for_resume_gaps(page, profile, modal):
+                        continue
+        finally:
+            _bot_fill_end(page)
 
         body = _read_dialog_text(page)
 
@@ -982,10 +1137,10 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         modal = _easy_apply_modal(page)
         page_idx = _modal_page_index(page)
         if last_page_idx is not None and page_idx is not None and page_idx < last_page_idx:
-            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}")
+            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{page_idx}", profile=profile)
             last_page_idx = page_idx
             continue
-        if _user_requested_step_back(page, modal):
+        if _user_requested_step_back(page, modal, profile):
             last_page_idx = _modal_page_index(page) or last_page_idx
             continue
         if _hold_remaining_ms(page) >= 250:
@@ -996,6 +1151,10 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         advanced = False
         if _hold_remaining_ms(page) >= 250:
             continue
+        try:
+            page.evaluate("window.__rbBotAdvancing = true")
+        except Exception:
+            pass
         for aria in ("Continue to next step", "Review your application", "Submit application", "Submit"):
             btn = modal.locator(f'button[aria-label="{aria}" i]')
             if _click_locator(btn, force=False):
@@ -1011,6 +1170,10 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
                 _wait_slice(page, 2000)
                 advanced = True
             elif _click_by_patterns(page, MODAL_DONE, scope=modal):
+                try:
+                    page.evaluate("window.__rbBotAdvancing = false")
+                except Exception:
+                    pass
                 return APPLY_RESULT_SUBMITTED
             else:
                 if not body and _modal_visible(page):
@@ -1048,6 +1211,10 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
                 else:
                     same_step_count = 0
                 last_step_sig = step_sig
+        try:
+            page.evaluate("window.__rbBotAdvancing = false")
+        except Exception:
+            pass
 
         body = _read_dialog_text(page)
         if _submission_confirmed(page, body):
@@ -1058,7 +1225,7 @@ def complete_easy_apply_modal(page: Page, profile: dict, resume_path: str, *, ma
         _wait_slice(page, 800)
         after_idx = _modal_page_index(page)
         if last_page_idx is not None and after_idx is not None and after_idx < last_page_idx:
-            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{after_idx}")
+            _freeze_on_previous_step(page, reason=f"Back {last_page_idx}→{after_idx}", profile=profile)
             last_page_idx = after_idx
             continue
         if after_idx is not None:

@@ -41,3 +41,5 @@ class MatchResult(BaseModel):
     embedding_score: float
     location_score: float
     passed_threshold: bool
+    apply_status: str = "queued"
+    apply_message: str = ""
